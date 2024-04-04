@@ -20,10 +20,26 @@
 \ * Port to SUBLEQ eForth <https://github.com/howerj/subleq>
 \ * Use 32 directories per block?
 \ * Allow multiple disks? (store globals in structure)
+\ * Hide internal words in a wordlist
 \
 \ ## Format
 \
 \ ### FAT - File Allocation Table
+\
+\ The FAT, or File Allocation Table, is a data-structure at
+\ the heart of this file system. It is contained in a single
+\ Forth block in this version of the file system and consists
+\ of 512 16-bit entries (which limits this file system 512KiB).
+\
+\ Each 16-bit entry is either a special value or a node in a
+\ linked list of entries terminating in a special value.
+\
+\ Special values include; This block is free, this block is
+\ bad (an error occurred reading or writing that block), this
+\ block is unmapped (if fewer than 512 blocks are available),
+\ or this block is special for some other reason (for example
+\ that block holds the FAT itself, the initial directory or
+\ the boot block).
 \
 \ ### Text Directory Format
 \
@@ -74,7 +90,7 @@ wordlist constant {ffs} \ TODO: Add all this to this wordlist
 
 : line ( k l -- a u )
  [ $6 ] literal lshift swap block + [ $40 ] literal ;
-: loadline line evaluate ; ( k l -- ??? : execute a line! )
+\ : loadline line evaluate ; ( k l -- ??? : execute a line! )
 
 
 defined ?depth 0= [if]
@@ -127,7 +143,7 @@ create dirstk maxdir cells allot dirstk maxdir cells erase
 create namebuf maxname allot namebuf maxname blank
 variable dirp 0 dirp ! \ Directory Pointer
 
-variable version  $0100 version ! \ Version
+variable version  $0001 version ! \ Version
 variable start    1 start !       \ Starting block
 0 constant init                   \ Initial program block
 1 constant fat                    \ FAT Block
@@ -165,8 +181,8 @@ variable loaded   0 loaded !      \ Loaded initial program?
   repeat
   drop
   update flush ;
-: bblk block b/buf blank update flush ;
-: fblk block b/buf erase update flush ;
+: bblk block b/buf blank update flush ; ( blk -- )
+: fblk block b/buf erase update flush ; ( blk -- )
 : fblks over - 1- for dup fblk 1+ next drop ; ( lo hi -- )
 : fmt.blks dirstart 1+ end @ fblks ;
 : fdisk fmt.init fmt.fat fmt.blks ; \ TODO: Format first directory
@@ -177,10 +193,25 @@ variable loaded   0 loaded !      \ Loaded initial program?
    2 pick over + 16@ blk.free = if nip nip 0 then
    2 +
   repeat 2drop drop 0 -1 ;
+\ TODO: Sanity checking (retrieve value and make sure it is
+\ not special / invalid / bad block / etcetera
+\ TODO: Does one extra
+: reserve-range ( blk n -- : allocate range of blocks )
+  ?dup 0= if drop exit then
+  1- for
+    dup 1+ tuck swap reserve
+  next
+  blk.end swap reserve flush ;
+: free-list ( blk -- : free a linked list ) 
+  begin
+  dup link swap blk.free swap reserve
+  dup blk.end = until blk.free swap reserve flush ; 
+: link-load ; ( file -- ) \ TODO: Load through FAT
+: link-list ; ( file -- ) \ TODO: List through FAT
+: append ; ( blk file -- ) \ TODO: Append block to FAT list
 \ TODO: Allocate contiguous range
-: free-range ( n -- blk )
+: contiguous ( n -- blk )
   ?dup 0= if -1 exit then
-
   >r
   0
   begin
@@ -195,23 +226,10 @@ variable loaded   0 loaded !      \ Loaded initial program?
         \ TODO: Skip entire range
         1+
       repeat
-
+      \ reserve-range, exit
     then
     1+
   repeat rdrop drop -1 ;
-\ TODO: Sanity checking (retrieve value and make sure it is
-\ not special / invalid / bad block / etcetera
-\ TODO: Does one extra
-: reserve-range ( blk n -- : allocate range of blocks )
-  ?dup 0= if drop exit then
-  1- for
-    dup 1+ tuck swap reserve
-  next
-  blk.end swap reserve ;
-: free-list ( blk -- : free a linked list ) 
-  begin
-  dup link swap blk.free swap reserve
-  dup blk.end = until blk.free swap reserve ; 
 
 : dirp? dirp @ 0 maxdir within 0= if 0 dirp ! -2 throw then ;
 : (dir) dirp? dirstk dirp @ cells + ;
@@ -278,6 +296,9 @@ variable loaded   0 loaded !      \ Loaded initial program?
   2drop -1 ;
 
 : newdir peekd dup empty? dup 0< -1 and throw ; ( -- dir ) \ find free fat, fmt
+
+\ wordlist constant {shell} \ TODO: Add commands to this wordlist
+
 : mkdir 
   ; \ get string, peekd, find empty+insert, fat, fmt, unique check
 : rmdir ; \ get string, peekd, find, erase, compact unlink fat
@@ -289,6 +310,7 @@ variable loaded   0 loaded !      \ Loaded initial program?
 : shell ; \ get line / error handling / execute
 : tree ; \ recursive tree view
 : defrag ; \ compact disk
+: help ;
 
 dirstart? pushd
 
