@@ -158,6 +158,7 @@ enxt constant EEXIS ( already exists )
 enxt constant EPATH ( path too long )
 enxt constant EFLEN ( file length )
 enxt constant EDFUL ( directory full )
+enxt constant EDNEM ( directory not empty )
 enxt constant ENFIL ( not a file )
 enxt constant ENDIR ( not a directory )
 enxt constant EARGU ( invalid argument )
@@ -388,7 +389,7 @@ variable eline 0 eline !
   nname peekd dir-find dup >r 0< EFILE error
   peekd r@ dir? if
     0= ENFIL error
-    \ TODO: check if directory is empty
+    peekd r@ dirent-blk@ is-empty? EDNEM error
   then
   peekd r@ dirent-blk@ bfree
   peekd r@ dirent-erase
@@ -396,9 +397,9 @@ variable eline 0 eline !
   - cmove
   save rdrop drop ;
 
-
 \ wordlist constant {shell} \ TODO: Add commands to this wordlist
 
+\ TODO: Mount read-only, reload init block? More mount opts
 : mount 0 dirp ! dirstart pushd ;
 : fdisk fmt.init fmt.fat fmt.blks fmt.root mount ; 
 : mkdir ( "dir" -- )
@@ -409,12 +410,9 @@ variable eline 0 eline !
   balloc dup >r peekd eline? dir-blk-ins
   [char] D peekd eline? dirent-type!
   nname r> fmtdir ; 
-
 : rm token count ncopy 0 (rm) ;
 : del rm ;
-
 : rmdir token count ncopy 1 (rm) ; ( "dir" -- )
-
 : cd  ( "dir" -- )
   \ TODO: Full path parsing (e.g. A/B/C) + error checking
   token count 2dup s" ." compare 0= if 2drop exit then
@@ -437,10 +435,10 @@ variable eline 0 eline !
 : shell ; \ get line / error handling / execute
 : tree ; \ recursive tree view
 : rename ; \ ( token token )
-: del ;
 : stat ;
 : defrag ; \ compact disk
 : help ;
+: edit ;
 
 
 0 block? load
