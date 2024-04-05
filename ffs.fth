@@ -21,6 +21,11 @@
 \ * Use 32 directories per block?
 \ * Allow multiple disks? (store globals in structure)
 \ * Hide internal words in a wordlist
+\ * Unit tests, online help, ...
+\ * Optimize flush behavior 
+\ * Optional case insensitivity in file names
+\ * Detect bad blocks with a wrapper around `block`, setting
+\ FAT table.
 \
 \ ## Format
 \
@@ -140,7 +145,27 @@ $FFFF constant blk.free     \ Block is free to use
 16 constant maxname
 8 constant maxdir
 create dirstk maxdir cells allot dirstk maxdir cells erase
+
+: enxt dup 1- swap ; ( n -- n n )
+
+-1024
+enxt constant EUNKN ( unknown error )
+enxt constant EIBLK ( bad block )
+enxt constant EFILE ( file not found )
+enxt constant EFULL ( disk full )
+enxt constant EFSCK ( corrupt datastructure / disk )
+enxt constant EEXIS ( already exists )
+enxt constant EPATH ( path too long )
+enxt constant EFLEN ( file length )
+enxt constant EDFUL ( directory full )
+drop
+
+: error swap if throw then drop ; ( f code -- )
+
+\ TODO: Use namebuf:
+: namebuf: create here maxname 2dup allot blank does> maxname ;
 create namebuf maxname allot namebuf maxname blank
+create findbuf maxname allot findbuf maxname blank
 variable dirp 0 dirp ! \ Directory Pointer
 
 variable version  $0001 version ! \ Version
@@ -152,21 +177,23 @@ variable start    1 start !       \ Starting block
 64 constant c/blk                 \ Columns per block
 variable end      128 end !       \ End block
 variable loaded   0 loaded !      \ Loaded initial program?
+variable eline 0 eline !
 
 : block? ( blk -- blk )
-  start @ + dup start @ end @ 1+ within 0= -1 and throw ;
+  start @ + dup start @ end @ 1+ within 0= EIBLK error ;
 : addr? block? block ; ( blk -- addr )
 : fat? fat block? ; ( -- fat-blk )
 : dirstart? dirstart block? ; ( -- start-dir-blk )
 
+: save update flush ;
 : 16! 2dup c! swap 8 rshift swap 1+ c! update ;
 : 16@ dup c@ swap 1+ c@ 8 lshift or ;
 : link 2* fat addr? + 16@ ; ( blk -- blk )
-: reserve 2* fat addr? + 16! ; ( blk blk -- )
+: reserve 2* fat addr? + 16! ( flush ) ; ( blk blk -- )
 : fmt.init
   init addr? b/buf blank
   s" .( HOWERJ SIMPLE FORTH FILE SYSTEM ) cr 1 loaded ! " 
-  init addr? swap cmove update flush ;
+  init addr? swap cmove save ;
 : fmt.fat
   fat addr? b/buf erase
   0 b/buf 2/ 1- for blk.unused over reserve 1+ next drop
@@ -180,19 +207,26 @@ variable loaded   0 loaded !      \ Loaded initial program?
     blk.free over reserve 1+
   repeat
   drop
-  update flush ;
-: bblk block b/buf blank update flush ; ( blk -- )
-: fblk block b/buf erase update flush ; ( blk -- )
+  save ;
+
+: bblk block b/buf blank save ; ( blk -- )
+: fblk block b/buf erase save ; ( blk -- )
 : fblks over - 1- for dup fblk 1+ next drop ; ( lo hi -- )
 : fmt.blks dirstart 1+ end @ fblks ;
-: fdisk fmt.init fmt.fat fmt.blks ; \ TODO: Format first directory
-: free? fat addr? b/buf 2/ 0 ( -- blk : find free block )
+: free? ( -- blk f )
+  fat addr? 0
   begin
-   2dup >
+    dup end @ <
   while
-   2 pick over + 16@ blk.free = if nip nip 0 then
-   2 +
-  repeat 2drop drop 0 -1 ;
+    2dup 2* + 16@ blk.free = if nip -1 exit then
+    1+
+  repeat 2drop 0 0 ;
+: balloc ( -- blk )
+  free? 0= -1 and throw dup blk.end swap reserve flush ;
+: bfree ( blk -- : free a linked list ) 
+  begin
+  dup link swap blk.free swap reserve
+  dup blk.end = until blk.free swap reserve flush ; 
 \ TODO: Sanity checking (retrieve value and make sure it is
 \ not special / invalid / bad block / etcetera
 \ TODO: Does one extra
@@ -202,13 +236,9 @@ variable loaded   0 loaded !      \ Loaded initial program?
     dup 1+ tuck swap reserve
   next
   blk.end swap reserve flush ;
-: free-list ( blk -- : free a linked list ) 
-  begin
-  dup link swap blk.free swap reserve
-  dup blk.end = until blk.free swap reserve flush ; 
 : link-load ; ( file -- ) \ TODO: Load through FAT
 : link-list ; ( file -- ) \ TODO: List through FAT
-: append ; ( blk file -- ) \ TODO: Append block to FAT list
+\ : append ; ( blk file -- ) \ TODO: Append block to FAT list
 \ TODO: Allocate contiguous range
 : contiguous ( n -- blk )
   ?dup 0= if -1 exit then
@@ -221,7 +251,7 @@ variable loaded   0 loaded !      \ Loaded initial program?
       0 begin
         dup r@ <
       while
-        2dup + link blk.free <> if drop then
+        2dup + link blk.free <> if drop r@ then
         \ TODO: Reserve blocks if exist in linked list
         \ TODO: Skip entire range
         1+
@@ -236,7 +266,7 @@ variable loaded   0 loaded !      \ Loaded initial program?
 : pushd (dir) ! 1 dirp +! ; ( dir -- )
 : popd -1 dirp +! (dir) @  ; ( -- dir )
 : peekd popd dup pushd ; ( -- dir )
-: ls peekd list ;
+: ls peekd block? list ;
 
 : (df)
   0 fat addr? b/buf 2/ 1- for
@@ -251,74 +281,144 @@ variable loaded   0 loaded !      \ Loaded initial program?
    ." START BLK: " start @ u. cr
    ." END BLK:   " end @ u. cr
    ." MAX DIRS:  " maxdir u. cr
-   ." MAX:       "  end @ start @ - dup . ." / " b/buf * u. cr
-   ." FREE:      "  blk.free (df) dup . ." / " b/buf * u. cr ;
+   ." MAX:       " end @ start @ - dup . ." / " b/buf * u. cr
+   ." FREE:      " blk.free (df) dup . ." / " b/buf * u. cr ;
+
+\ TODO: Better printing
+: .hex base @ >r hex 0 <# # # # # #> type r> base ! ;
+: (.fat)
+  b/buf 2/ swap - 1- .hex ." :"
+  dup blk.free    = if ." FREE " drop exit then
+  dup blk.bad-blk = if ." BADB " drop exit then
+  dup blk.end     = if ." END! " drop exit then
+  dup blk.special = if ." SPEC " drop exit then
+  dup blk.unused  = if ." NUSD " drop exit then
+  .hex space ;
+: .ffat 
+  cr
+  fat addr? b/buf 2/ 1- for 
+    dup 16@ r@ (.fat) 2 + 
+    r@ b/buf 2/ swap - 8 mod 0= if cr then
+  next drop ;
+: .sfat fat addr? end @ 2 * dump ;
 : .fat fat addr? b/buf 2/ 1- for dup 16@ . 2 + next drop ;
 
 : nlen? dup maxname > -1 and throw ; ( n -- n )
-: nclear namebuf maxname blank ; ( -- )
-: ncopy nclear nlen? namebuf swap cmove ; ( c-addr u )
+
 : nname namebuf maxname ; ( -- c-addr u )
+: nclear nname blank ; ( -- )
+: ncopy nclear nlen? namebuf swap cmove ; ( c-addr u )
+: fname findbuf maxname ;
+: fclear fname blank ; ( -- )
+: fcopy fclear nlen? findbuf swap cmove ; ( c-addr u )
+
 : hexp base @ >r hex 0 <# # # # # [char] $ hold #> r> base ! ;
 
 : fmtdirent ( c-addr u dir line blk blk type -- )
 ;
 
-: fmtdir ( c-addr u dir -- )
-  >r ncopy
-  s" \ " r@ addr? swap cmove
-  nname r@ addr? 2 + swap cmove
-  r@ hexp r> addr? 3 + maxname + swap cmove
-  update flush ;
-
 : >la dup 0 16 within 0= -1 and throw c/blk * ;
+\ : .n ."   |" 2dup type ." |" cr ;
+\ : .nn ." {" cr .n >r >r .n r> r> ." }" cr ;
+: index >la swap addr? + ;
+: dirent-type! index dup >r c! bl r> 1+ c! save ;
+: dirent-type@ index c@ ;
+: dirent-name! 2>r index 2r> cmove save ;
+: dirent-name@ index 2 + maxname ; 
+: dirent-blk@ ( blk line -- n )
+  index maxname + 2 + 5 numberify 0= throw d>s ;
+: dirent-blk!  ( n blk line -- )
+  index maxname + 2 + swap hexp cmove save ;
+
+
+: fmtdir ( c-addr u dir -- )
+  >r fcopy
+\  [char] \ r@ addr? 0 dirent-type! 
+  s" \ " r@ addr? swap cmove update
+  fname r@ addr? 2 + swap cmove update
+  r@ hexp r> addr? 2 + maxname + swap cmove update
+  flush ;
+
 : dir-find ( c-addr u blk -- line | -1 )
-  >r ncopy
+  >r fcopy
   1 ( skip first line at zero, this contains directory info )
   begin
     dup l/blk <
   while
-    dup >la r@ addr? + nname compare 0= if rdrop exit then
+    dup >la r@ addr? + 2 + maxname fname compare 
+    0= if rdrop exit then
     1+
   repeat
   rdrop drop -1 ; 
-: dir-insert ; ( c-addr u blk )
-: dir-erase >la swap addr? + c/blk blank ; ( blk line )
+: dir-insert ( caddr u blk line )
+  >la swap addr? + 2 + swap cmove update ; 
+: dir-blk-ins ( blk blk line )
+  >la maxname + 2 + swap addr? + >r hexp r> swap cmove update ;
+: dir-erase >la swap addr? + c/blk blank update ; ( blk line )
 
 : empty? ( blk -- line | -1 : get empty line )
-  addr? 0 
+  addr? c/blk + 1 ( skip first line )
   begin
    dup l/blk <
   while
    over c@ bl <= if nip exit then
-   swap c/blk + swap 1+ cr
+   swap c/blk + swap 1+
   repeat
   2drop -1 ;
 
-: newdir peekd dup empty? dup 0< -1 and throw ; ( -- dir ) \ find free fat, fmt
+\ TODO: Get working
+: fmt.root 
+  s"  [ROOT]" ncopy nname dirstart? 
+  fmtdir blk.end dirstart? reserve flush ;
+: mount 0 dirp ! dirstart? pushd ;
+: fdisk fmt.init fmt.fat fmt.blks fmt.root mount ; 
 
 \ wordlist constant {shell} \ TODO: Add commands to this wordlist
 
 : mkdir 
+   peekd empty? dup eline ! -1 = EDFUL error
+   token count ncopy 
+   nname peekd dir-find 0>= EEXIS error
+   nname peekd dup empty? dir-insert
+   balloc dup block? bblk dup >r peekd dup empty? dir-blk-ins
+   [char] D peekd dup empty? >la swap addr? + c! save 
+   nname r> ( block? ) fmtdir
   ; \ get string, peekd, find empty+insert, fat, fmt, unique check
-: rmdir ; \ get string, peekd, find, erase, compact unlink fat
+: rmdir 
+  token count ncopy
+  nname peekd dir-find dup >r 0< EFILE error
+  \ peekd r@ dirent-blk@ bfree \ TODO: Fix
+  peekd r@ dir-erase
+  \ TODO: Get compacting working
+  \ peekd addr? dup r@ c/blk * b/buf over - -rot + -rot cmove
+  save
+  rdrop
+  ; \ get string, peekd, find, erase, compact unlink fat
 : cd 
-  \ special dirs ".", "..", "/" (full parsing should be done, eventually)
-; \ get string, peekd, find, get block, pushd
+  \ TODO: Full path parsing (e.g. A/B/C)
+  token count 2dup s" ." compare 0= if 2drop exit then
+  2dup s" .." compare 0= if 2drop popd drop exit then
+  2dup dir-find dup >r 0< EFILE error
+\  dirent-blk@
+  rdrop
+  -1 throw ;
 : exe ; \ get string, peekd, find, get block range, thru
 : cat ; \ get string, peekd find, list
 : shell ; \ get line / error handling / execute
 : tree ; \ recursive tree view
+: rename ; \ ( token token )
+: rm ;
+: del ;
+: stat ;
 : defrag ; \ compact disk
 : help ;
-
-dirstart? pushd
 
 0 block? load
 loaded @ 0= [if]
 .( Forth File System not present, formatting... ) cr
 fdisk
-\ mkdir [root]
 .( Done ) cr
+[else]
+mount \ TODO: Better mount
 [then]
 
