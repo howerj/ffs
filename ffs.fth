@@ -78,7 +78,7 @@ wordlist constant {ffs} \ TODO: Add all this to this wordlist
     1- dpl ! 1+ dpl @
   repeat
   2drop r> if dnegate then r> base ! -1 ;
-: token bl word ;
+: token bl word ; \ TODO: Throw error if no word
 : nul? count nip 0= ; ( a -- f : is counted word empty? )
 : grab ( <word> -- a : get word from input stream  )
   begin token dup nul? 0= ?exit drop query again ;
@@ -158,6 +158,9 @@ enxt constant EEXIS ( already exists )
 enxt constant EPATH ( path too long )
 enxt constant EFLEN ( file length )
 enxt constant EDFUL ( directory full )
+enxt constant ENFIL ( not a file )
+enxt constant ENDIR ( not a directory )
+enxt constant EARGU ( invalid argument )
 drop
 
 : error swap if throw then drop ; ( f code -- )
@@ -182,9 +185,7 @@ variable eline 0 eline !
 : block? ( blk -- blk )
   start @ + dup start @ end @ 1+ within 0= EIBLK error ;
 : addr? block? block ; ( blk -- addr )
-: fat? fat block? ; ( -- fat-blk )
-: dirstart? dirstart block? ; ( -- start-dir-blk )
-
+: eline? eline @ ;
 : save update flush ;
 : 16! 2dup c! swap 8 rshift swap 1+ c! update ;
 : 16@ dup c@ swap 1+ c@ 8 lshift or ;
@@ -208,7 +209,6 @@ variable eline 0 eline !
   repeat
   drop
   save ;
-
 : bblk block b/buf blank save ; ( blk -- )
 : fblk block b/buf erase save ; ( blk -- )
 : fblks over - 1- for dup fblk 1+ next drop ; ( lo hi -- )
@@ -226,7 +226,8 @@ variable eline 0 eline !
 : bfree ( blk -- : free a linked list ) 
   begin
   dup link swap blk.free swap reserve
-  dup blk.end = until blk.free swap reserve flush ; 
+  dup blk.end = until flush ; 
+
 \ TODO: Sanity checking (retrieve value and make sure it is
 \ not special / invalid / bad block / etcetera
 \ TODO: Does one extra
@@ -264,7 +265,7 @@ variable eline 0 eline !
 : dirp? dirp @ 0 maxdir within 0= if 0 dirp ! -2 throw then ;
 : (dir) dirp? dirstk dirp @ cells + ;
 : pushd (dir) ! 1 dirp +! ; ( dir -- )
-: popd -1 dirp +! (dir) @  ; ( -- dir )
+: popd dirp @ if -1 dirp +! then (dir) @  ; ( -- dir )
 : peekd popd dup pushd ; ( -- dir )
 : ls peekd block? list ;
 
@@ -329,9 +330,11 @@ variable eline 0 eline !
   index maxname + 2 + 5 numberify 0= throw d>s ;
 : dirent-blk!  ( n blk line -- )
   index maxname + 2 + swap hexp cmove save ;
-
+: dirent-erase ( blk line )
+  >la swap addr? + c/blk blank update ; 
 
 : fmtdir ( c-addr u dir -- )
+  dup block? bblk
   >r fcopy
 \  [char] \ r@ addr? 0 dirent-type! 
   s" \ " r@ addr? swap cmove update
@@ -352,9 +355,17 @@ variable eline 0 eline !
   rdrop drop -1 ; 
 : dir-insert ( caddr u blk line )
   >la swap addr? + 2 + swap cmove update ; 
+\ TODO: Remove? Use dirent-blk!
 : dir-blk-ins ( blk blk line )
   >la maxname + 2 + swap addr? + >r hexp r> swap cmove update ;
-: dir-erase >la swap addr? + c/blk blank update ; ( blk line )
+
+: .name ( c-addr u -- : display string until space )
+  begin
+    dup
+  while
+    over c@ dup bl <= if drop 2drop exit then emit
+    1- swap 1+ swap
+  repeat 2drop ;
 
 : empty? ( blk -- line | -1 : get empty line )
   addr? c/blk + 1 ( skip first line )
@@ -365,53 +376,72 @@ variable eline 0 eline !
    swap c/blk + swap 1+
   repeat
   2drop -1 ;
+: is-empty? empty? 1 <> ; ( blk -- f )
 
-\ TODO: Get working
 : fmt.root 
-  s"  [ROOT]" ncopy nname dirstart? 
-  fmtdir blk.end dirstart? reserve flush ;
-: mount 0 dirp ! dirstart? pushd ;
-: fdisk fmt.init fmt.fat fmt.blks fmt.root mount ; 
+  s"  [ROOT]" ncopy nname dirstart
+  fmtdir blk.end dirstart reserve flush ;
+
+: /root dirp @ for popd drop next ;
+: dir? dirent-type@ [char] D = ; ( dir line -- f )
+: (rm) ( f -- )
+  nname peekd dir-find dup >r 0< EFILE error
+  peekd r@ dir? if
+    0= ENFIL error
+    \ TODO: check if directory is empty
+  then
+  peekd r@ dirent-blk@ bfree
+  peekd r@ dirent-erase
+  peekd addr? r@ c/blk * + dup c/blk + swap b/buf r@ 1+ c/blk * 
+  - cmove
+  save rdrop drop ;
+
 
 \ wordlist constant {shell} \ TODO: Add commands to this wordlist
 
-: mkdir 
-   peekd empty? dup eline ! -1 = EDFUL error
-   token count ncopy 
-   nname peekd dir-find 0>= EEXIS error
-   nname peekd dup empty? dir-insert
-   balloc dup block? bblk dup >r peekd dup empty? dir-blk-ins
-   [char] D peekd dup empty? >la swap addr? + c! save 
-   nname r> ( block? ) fmtdir
-  ; \ get string, peekd, find empty+insert, fat, fmt, unique check
-: rmdir 
-  token count ncopy
-  nname peekd dir-find dup >r 0< EFILE error
-  \ peekd r@ dirent-blk@ bfree \ TODO: Fix
-  peekd r@ dir-erase
-  \ TODO: Get compacting working
-  \ peekd addr? dup r@ c/blk * b/buf over - -rot + -rot cmove
-  save
-  rdrop
-  ; \ get string, peekd, find, erase, compact unlink fat
-: cd 
-  \ TODO: Full path parsing (e.g. A/B/C)
+: mount 0 dirp ! dirstart pushd ;
+: fdisk fmt.init fmt.fat fmt.blks fmt.root mount ; 
+: mkdir ( "dir" -- )
+  peekd empty? dup eline ! -1 = EDFUL error
+  token count ncopy 
+  nname peekd dir-find 0>= EEXIS error
+  nname peekd eline? dir-insert
+  balloc dup >r peekd eline? dir-blk-ins
+  [char] D peekd eline? dirent-type!
+  nname r> fmtdir ; 
+
+: rm token count ncopy 0 (rm) ;
+: del rm ;
+
+: rmdir token count ncopy 1 (rm) ; ( "dir" -- )
+
+: cd  ( "dir" -- )
+  \ TODO: Full path parsing (e.g. A/B/C) + error checking
   token count 2dup s" ." compare 0= if 2drop exit then
   2dup s" .." compare 0= if 2drop popd drop exit then
-  2dup dir-find dup >r 0< EFILE error
-\  dirent-blk@
-  rdrop
-  -1 throw ;
+  2dup s" /" compare 0= if 2drop /root exit then
+  peekd dir-find dup >r 0< EFILE error
+  peekd r@ dir? 0= ENDIR error
+  peekd r> dirent-blk@ pushd ;
+: pwd ( -- )
+  0
+  begin
+    dup dirp @ <
+  while
+    dup cells dirstk + @ 0 dirent-name@ .name ." /"
+    1+
+  repeat
+  drop ;
 : exe ; \ get string, peekd, find, get block range, thru
 : cat ; \ get string, peekd find, list
 : shell ; \ get line / error handling / execute
 : tree ; \ recursive tree view
 : rename ; \ ( token token )
-: rm ;
 : del ;
 : stat ;
 : defrag ; \ compact disk
 : help ;
+
 
 0 block? load
 loaded @ 0= [if]
