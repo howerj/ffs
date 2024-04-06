@@ -26,6 +26,9 @@
 \ * Optional case insensitivity in file names
 \ * Detect bad blocks with a wrapper around `block`, setting
 \ FAT table.
+\ * https://stackoverflow.com/questions/4586972/ Fragmentation
+\ calculation
+\
 \
 \ ## Format
 \
@@ -192,6 +195,8 @@ variable eline 0 eline !
 : 16@ dup c@ swap 1+ c@ 8 lshift or ;
 : link 2* fat addr? + 16@ ; ( blk -- blk )
 : reserve 2* fat addr? + 16! ( flush ) ; ( blk blk -- )
+: btotal end @ start @ - ;
+: bcheck btotal 4 < -1 and throw ;
 : fmt.init
   init addr? b/buf blank
   s" .( HOWERJ SIMPLE FORTH FILE SYSTEM ) cr 1 loaded ! " 
@@ -210,10 +215,10 @@ variable eline 0 eline !
   repeat
   drop
   save ;
-: bblk block b/buf blank save ; ( blk -- )
-: fblk block b/buf erase save ; ( blk -- )
+: bblk addr? b/buf blank save ; ( blk -- )
+: fblk addr? b/buf erase save ; ( blk -- )
 : fblks over - 1- for dup fblk 1+ next drop ; ( lo hi -- )
-: fmt.blks dirstart 1+ end @ fblks ;
+: fmt.blks dirstart end @ fblks ;
 : free? ( -- blk f )
   fat addr? 0
   begin
@@ -223,7 +228,7 @@ variable eline 0 eline !
     1+
   repeat 2drop 0 0 ;
 : balloc ( -- blk )
-  free? 0= -1 and throw dup blk.end swap reserve flush ;
+  free? 0= EFULL error dup blk.end swap reserve flush ;
 : bfree ( blk -- : free a linked list ) 
   begin
   dup link swap blk.free swap reserve
@@ -277,6 +282,8 @@ variable eline 0 eline !
     then
     2 +
   next drop nip ;
+
+\ TODO: Quantify fragmentation, measure largest alloc block
 : df cr
    loaded @ 0= if ." NO DISK" cr exit then
    ." MOUNTED" cr
@@ -331,14 +338,17 @@ variable eline 0 eline !
   index maxname + 2 + 5 numberify 0= throw d>s ;
 : dirent-blk!  ( n blk line -- )
   index maxname + 2 + swap hexp cmove save ;
+\ TODO Replace with dirent-blk!
+: dir-blk-ins ( n blk line )
+  >la maxname + 2 + swap addr? + >r hexp r> swap cmove update ;
 : dirent-erase ( blk line )
   >la swap addr? + c/blk blank update ; 
 
+\ TOOD: Rewrite
 : fmtdir ( c-addr u dir -- )
-  dup block? bblk
+  dup bblk
   >r fcopy
-\  [char] \ r@ addr? 0 dirent-type! 
-  s" \ " r@ addr? swap cmove update
+  [char] \ r@ 0 dirent-type!
   fname r@ addr? 2 + swap cmove update
   r@ hexp r> addr? 2 + maxname + swap cmove update
   flush ;
@@ -356,17 +366,16 @@ variable eline 0 eline !
   rdrop drop -1 ; 
 : dir-insert ( caddr u blk line )
   >la swap addr? + 2 + swap cmove update ; 
-\ TODO: Remove? Use dirent-blk!
-: dir-blk-ins ( blk blk line )
-  >la maxname + 2 + swap addr? + >r hexp r> swap cmove update ;
 
-: .name ( c-addr u -- : display string until space )
+: namelen ( c-addr u -- n : count until space )
+  0 >r
   begin
     dup
   while
-    over c@ dup bl <= if drop 2drop exit then emit
+    over c@ bl <= if 2drop r> exit then
+    r> 1+ >r
     1- swap 1+ swap
-  repeat 2drop ;
+  repeat 2drop r> ;
 
 : empty? ( blk -- line | -1 : get empty line )
   addr? c/blk + 1 ( skip first line )
@@ -401,7 +410,7 @@ variable eline 0 eline !
 
 \ TODO: Mount read-only, reload init block? More mount opts
 : mount 0 dirp ! dirstart pushd ;
-: fdisk fmt.init fmt.fat fmt.blks fmt.root mount ; 
+: fdisk bcheck fmt.init fmt.fat fmt.blks fmt.root mount ; 
 : mkdir ( "dir" -- )
   peekd empty? dup eline ! -1 = EDFUL error
   token count ncopy 
@@ -412,6 +421,7 @@ variable eline 0 eline !
   nname r> fmtdir ; 
 : rm token count ncopy 0 (rm) ;
 : del rm ;
+: erase rm ;
 : rmdir token count ncopy 1 (rm) ; ( "dir" -- )
 : cd  ( "dir" -- )
   \ TODO: Full path parsing (e.g. A/B/C) + error checking
@@ -421,12 +431,14 @@ variable eline 0 eline !
   peekd dir-find dup >r 0< EFILE error
   peekd r@ dir? 0= ENDIR error
   peekd r> dirent-blk@ pushd ;
+: chdir cd ;
 : pwd ( -- )
   0
   begin
     dup dirp @ <
   while
-    dup cells dirstk + @ 0 dirent-name@ .name ." /"
+    dup cells dirstk + @ 0 dirent-name@ 
+    over >r namelen r> swap type ." /"
     1+
   repeat
   drop ;
@@ -434,11 +446,18 @@ variable eline 0 eline !
 : cat ; \ get string, peekd find, list
 : shell ; \ get line / error handling / execute
 : tree ; \ recursive tree view
+: deltree ; \ recursive delete
 : rename ; \ ( token token )
 : stat ;
+: more ;
 : defrag ; \ compact disk
+: chkdsk ;
+: grep ;
+: copy ;
+: cp copy ;
 : help ;
 : edit ;
+: cls page ;
 
 
 0 block? load
