@@ -9,14 +9,14 @@
 \ * Rewrite `list` so we have more control over output?
 \ * Shell loop that handles custom error
 \ * Write variables to first block
-\ * Directory wordlist, define "D"/"T" and "F" multiple
-\ times in different wordlists
 \ * C utility for manipulating disk images / collating
 \ files.
 \ * Documentation including file system limitations
 \ The first block contains executable code and is executed in
 \ an attempt to mount the file system.
 \ * Use $" instead of s"?
+\ * If "BYE" is called within an executed script, this needs
+\ ignore, that can be done by redefining it.
 \ * Port to SUBLEQ eForth <https://github.com/howerj/subleq>
 \ * Use 32 directories per block?
 \ * Allow multiple disks? (store globals in structure)
@@ -24,6 +24,7 @@
 \ * Unit tests, online help, ...
 \ * Optimize flush behavior 
 \ * Optional case insensitivity in file names
+\ * Map special files into root directory?
 \ * Detect bad blocks with a wrapper around `block`, setting
 \ FAT table.
 \ * https://stackoverflow.com/questions/4586972/ Fragmentation
@@ -87,8 +88,6 @@ wordlist constant {ffs} \ TODO: Add all this to this wordlist
   begin token dup nul? 0= ?exit drop query again ;
 : integer grab count numberify nip ; ( <num> -- n f : get int )
 : integer? integer 0= dpl @ 0>= or -$18 and throw ;
-\ : ingest ( a u -- : opposite of 'dump', load nums into mem )
-\  cell / for aft integer? over ! cell+ then next drop ;
 
 : -+ drop swap 0< if negate then ;
 : nget ( "123" -- : get a single signed number )
@@ -117,25 +116,28 @@ defined (order) 0= [if]
 
 defined b/buf 0= [if] 1024 constant b/buf [endif]
 
+\ TODO: Modify editor to work with FAT table, or make a new
+\ one to work with it.
 defined editor 0= [if]
 wordlist constant {editor}
 : editor [ {editor} ] literal +order ; ( BLOCK editor )
 {editor} +order definitions
+variable vista 1 vista ! \ Used to be `scr`
 : q [ {editor} ] literal -order ; ( -- : quit editor )
-: ? scr @ . ;    ( -- : print block number of current block )
-: l scr @ list ; ( -- : list current block )
-: x q scr @ load editor ; ( -- : evaluate current block )
-: ia 2 ?depth [ $6 ] literal lshift + scr @ block + tib
+: ? vista @ . ;    ( -- : print block number of current block )
+: l vista @ list ; ( -- : list current block )
+: x q vista @ load editor ; ( -- : evaluate current block )
+: ia 2 ?depth [ $6 ] literal lshift + vista @ block + tib
   >in @ + swap source nip >in @ - cmove tib @ >in ! l ;
 : a 0 swap ia ; ( line --, "line" : insert line at )
 : w get-order [ {editor} ] literal #1 ( -- : list cmds )
      set-order words set-order ; 
 : s update flush ; ( -- : save edited block )
-: n  1 scr +! l ; ( -- : display next block )
-: p -1 scr +! l ; ( -- : display previous block )
-: r scr ! l ; ( k -- : retrieve given block )
-: z scr @ block b/buf blank l ; ( -- : erase current block )
-: d 1 ?depth >r scr @ block r> [ $6 ] literal lshift +
+: n  1 vista +! l ; ( -- : display next block )
+: p -1 vista +! l ; ( -- : display previous block )
+: r vista ! l ; ( k -- : retrieve given block )
+: z vista @ block b/buf blank l ; ( -- : erase current block )
+: d 1 ?depth >r vista @ block r> [ $6 ] literal lshift +
    [ $40 ] literal blank l ; ( line -- : delete line )
 only forth definitions
 [endif]
@@ -169,10 +171,11 @@ drop
 
 : error swap if throw then drop ; ( f code -- )
 
-\ TODO: Use namebuf:
-: namebuf: create here maxname 2dup allot blank does> maxname ;
-create namebuf maxname allot namebuf maxname blank
-create findbuf maxname allot findbuf maxname blank
+: namebuf: create here maxname dup allot blank does> maxname ;
+
+namebuf: namebuf
+namebuf: findbuf
+
 variable dirp 0 dirp ! \ Directory Pointer
 
 variable version  $0001 version ! \ Version
@@ -190,7 +193,7 @@ variable eline 0 eline !
   start @ + dup start @ end @ 1+ within 0= EIBLK error ;
 : addr? block? block ; ( blk -- addr )
 : eline? eline @ ;
-: save update flush ;
+: save update save-buffers ;
 : 16! 2dup c! swap 8 rshift swap 1+ c! update ;
 : 16@ dup c@ swap 1+ c@ 8 lshift or ;
 : link 2* fat addr? + 16@ ; ( blk -- blk )
@@ -243,8 +246,8 @@ variable eline 0 eline !
     dup 1+ tuck swap reserve
   next
   blk.end swap reserve flush ;
-: link-load ; ( file -- ) \ TODO: Load through FAT
-: link-list ; ( file -- ) \ TODO: List through FAT
+: link-load load ; ( file -- ) \ TODO: Load through FAT
+: link-list list ; ( file -- ) \ TODO: List through FAT
 \ : append ; ( blk file -- ) \ TODO: Append block to FAT list
 \ TODO: Allocate contiguous range
 : contiguous ( n -- blk )
@@ -293,7 +296,6 @@ variable eline 0 eline !
    ." MAX:       " end @ start @ - dup . ." / " b/buf * u. cr
    ." FREE:      " blk.free (df) dup . ." / " b/buf * u. cr ;
 
-\ TODO: Better printing
 : .hex base @ >r hex 0 <# # # # # #> type r> base ! ;
 : (.fat)
   b/buf 2/ swap - 1- .hex ." :"
@@ -303,32 +305,21 @@ variable eline 0 eline !
   dup blk.special = if ." SPEC " drop exit then
   dup blk.unused  = if ." NUSD " drop exit then
   .hex space ;
-: .ffat 
+: .ffat ( -- )
   cr
   fat addr? b/buf 2/ 1- for 
     dup 16@ r@ (.fat) 2 + 
     r@ b/buf 2/ swap - 8 mod 0= if cr then
   next drop ;
-: .sfat fat addr? end @ 2 * dump ;
+: .sfat fat addr? end @ 2 * dump ; ( -- )
 : .fat fat addr? b/buf 2/ 1- for dup 16@ . 2 + next drop ;
-
 : nlen? dup maxname > -1 and throw ; ( n -- n )
-
-: nname namebuf maxname ; ( -- c-addr u )
-: nclear nname blank ; ( -- )
-: ncopy nclear nlen? namebuf swap cmove ; ( c-addr u )
-: fname findbuf maxname ;
-: fclear fname blank ; ( -- )
-: fcopy fclear nlen? findbuf swap cmove ; ( c-addr u )
-
+: nclear namebuf blank ; ( -- )
+: ncopy nclear nlen? namebuf drop swap cmove ; ( c-addr u )
+: fclear findbuf blank ; ( -- )
+: fcopy fclear nlen? findbuf drop swap cmove ; ( c-addr u )
 : hexp base @ >r hex 0 <# # # # # [char] $ hold #> r> base ! ;
-
-: fmtdirent ( c-addr u dir line blk blk type -- )
-;
-
 : >la dup 0 16 within 0= -1 and throw c/blk * ;
-\ : .n ."   |" 2dup type ." |" cr ;
-\ : .nn ." {" cr .n >r >r .n r> r> ." }" cr ;
 : index >la swap addr? + ;
 : dirent-type! index dup >r c! bl r> 1+ c! save ;
 : dirent-type@ index c@ ;
@@ -349,7 +340,7 @@ variable eline 0 eline !
   dup bblk
   >r fcopy
   [char] \ r@ 0 dirent-type!
-  fname r@ addr? 2 + swap cmove update
+  findbuf r@ addr? 2 + swap cmove update
   r@ hexp r> addr? 2 + maxname + swap cmove update
   flush ;
 
@@ -359,7 +350,7 @@ variable eline 0 eline !
   begin
     dup l/blk <
   while
-    dup >la r@ addr? + 2 + maxname fname compare 
+    dup >la r@ addr? + 2 + maxname findbuf compare 
     0= if rdrop exit then
     1+
   repeat
@@ -389,13 +380,13 @@ variable eline 0 eline !
 : is-empty? empty? 1 <> ; ( blk -- f )
 
 : fmt.root 
-  s"  [ROOT]" ncopy nname dirstart
+  s"  [ROOT]" ncopy namebuf dirstart
   fmtdir blk.end dirstart reserve flush ;
 
 : /root dirp @ for popd drop next ;
 : dir? dirent-type@ [char] D = ; ( dir line -- f )
 : (rm) ( f -- )
-  nname peekd dir-find dup >r 0< EFILE error
+  namebuf peekd dir-find dup >r 0< EFILE error
   peekd r@ dir? if
     0= ENFIL error
     peekd r@ dirent-blk@ is-empty? EDNEM error
@@ -414,14 +405,20 @@ variable eline 0 eline !
 : mkdir ( "dir" -- )
   peekd empty? dup eline ! -1 = EDFUL error
   token count ncopy 
-  nname peekd dir-find 0>= EEXIS error
-  nname peekd eline? dir-insert
+  namebuf peekd dir-find 0>= EEXIS error
+  namebuf peekd eline? dir-insert
   balloc dup >r peekd eline? dir-blk-ins
   [char] D peekd eline? dirent-type!
-  nname r> fmtdir ; 
+  namebuf r> fmtdir ; 
+
+: mkfile ( "file" -- )
+  peekd empty? dup eline ! -1 = EDFUL error
+  token count ncopy 
+  namebuf peekd dir-find 0>= EEXIS error
+  namebuf peekd eline? dir-insert
+  balloc dup bblk peekd eline? dir-blk-ins
+  [char] F peekd eline? dirent-type! ;
 : rm token count ncopy 0 (rm) ;
-: del rm ;
-: erase rm ;
 : rmdir token count ncopy 1 (rm) ; ( "dir" -- )
 : cd  ( "dir" -- )
   \ TODO: Full path parsing (e.g. A/B/C) + error checking
@@ -431,7 +428,6 @@ variable eline 0 eline !
   peekd dir-find dup >r 0< EFILE error
   peekd r@ dir? 0= ENDIR error
   peekd r> dirent-blk@ pushd ;
-: chdir cd ;
 : pwd ( -- )
   0
   begin
@@ -442,8 +438,6 @@ variable eline 0 eline !
     1+
   repeat
   drop ;
-: exe ; \ get string, peekd, find, get block range, thru
-: cat ; \ get string, peekd find, list
 : shell ; \ get line / error handling / execute
 : tree ; \ recursive tree view
 : deltree ; \ recursive delete
@@ -454,10 +448,28 @@ variable eline 0 eline !
 : chkdsk ;
 : grep ;
 : copy ;
-: cp copy ;
 : help ;
-: edit ;
+
+: (file) ( "file" -- blk )
+  token count ncopy 
+  namebuf peekd dir-find dup 0< EFILE error
+  peekd over dirent-type@ [char] D = ENFIL error
+  peekd swap dirent-blk@ ;
+
+: cat (file) block? link-list ;
+: exe (file) block? link-load  ; 
+
+{editor} +order
+: edit (file) block? vista ! editor ; ( "file" -- )
+{editor} -order
+
+\ Aliases
 : cls page ;
+: cp copy ;
+: touch mkfile ;
+: chdir cd ;
+: del rm ;
+: erase rm ;
 
 
 0 block? load
