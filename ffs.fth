@@ -34,6 +34,9 @@
 \ places where this checking *could* and *should* be done.
 \ * Full path parsing (e.g a/b/c) for all commands.
 \ * Store block in a more optimal way instead of as text?
+\ * Zero length files
+\ * Refactor system, factor words
+\ * Find orphaned nodes, data-structure checking, checksums?
 \
 \ ## Format
 \
@@ -147,13 +150,13 @@ drop
 
 : error swap if throw then drop ; ( f code -- )
 
+\ TODO: Make token1, token2, exists/does not exits routines
 : namebuf: create here maxname dup allot blank does> maxname ;
 
 namebuf: namebuf
 namebuf: findbuf
-
+create copy-store 1024 allot
 variable dirp 0 dirp ! \ Directory Pointer
-
 variable version  $0001 version ! \ Version
 variable start    1 start !       \ Starting block
 0 constant init                   \ Initial program block
@@ -164,6 +167,7 @@ variable start    1 start !       \ Starting block
 variable end      128 end !       \ End block
 variable loaded   0 loaded !      \ Loaded initial program?
 variable eline 0 eline !
+variable exit-shell 0 exit-shell !
 
 : numberify ( a u -- d -1 | a u 0 : easier than >number )
   -1 dpl !
@@ -285,10 +289,19 @@ variable eline 0 eline !
 : link-load ( file -- )
   begin dup >r block? load r> link dup blk.end = until drop ; 
 : link-list ( file -- )
-  begin dup >r block? list r> link dup blk.end = until drop ; 
+  begin dup block? list link dup blk.end = until drop ; 
 : link-blank ( file -- )
-  begin dup >r bblk r> link dup blk.end = until drop ;
-: link-more ( file -- ) ; \ TODO: implement
+  begin dup bblk link dup blk.end = until drop ;
+
+: more? key [ 32 invert ] literal and [char] Q = ;
+: more> cr ." --- (q)uit? --- " ;
+: moar block? list more> more? ;
+
+: link-more ( file -- ) 
+  begin 
+    dup moar if drop exit then link dup blk.end = 
+  until drop ; 
+
 : fat-append ; ( blk file -- ) \ TODO: Append block to FAT list
 : fat-prepend ; ( blk file -- )
 
@@ -359,14 +372,14 @@ variable eline 0 eline !
 : dirent-blk@ ( blk line -- n )
   index maxname + 2 + 5 numberify 0= throw d>s ;
 : dirent-blk!  ( n blk line -- )
-  index maxname + 2 + swap hexp cmove save ;
-\ TODO Replace with dirent-blk!
-: dir-blk-ins ( n blk line )
-  >la maxname + 2 + swap addr? + >r hexp r> swap cmove update ;
+  index maxname + 2 + >r hexp r> swap cmove save ;
 : dirent-erase ( blk line )
   >la swap addr? + c/blk blank update ; 
+: >copy addr? copy-store b/buf cmove ;
+: copy> addr? copy-store swap b/buf cmove ;
 
-\ TOOD: Rewrite
+
+\ TODO: Rewrite
 : fmtdir ( c-addr u dir -- )
   dup bblk
   >r fcopy
@@ -428,6 +441,16 @@ variable eline 0 eline !
   - cmove
   save rdrop drop ;
 
+: (copy) ( src-blks dst-blks )
+  swap
+  begin
+    dup >copy
+    over copy>
+    link swap link swap
+    dup
+    blk.end =
+  until 2drop ;
+
 \ wordlist constant {shell} \ TODO: Add commands to this wordlist
 
 : .type ( ch -- f )
@@ -451,7 +474,8 @@ variable eline 0 eline !
     1+
   repeat 2drop ;
 
-: ls peekd .dir ; ( : ls peekd block? list ; )
+: ls peekd .dir ; 
+\ : ls peekd block? list ;
 \ TODO: Mount read-only, reload init block? More mount opts
 : mount 0 dirp ! dirstart pushd ;
 : fdisk bcheck fmt.init fmt.fat fmt.blks fmt.root mount ; 
@@ -459,23 +483,36 @@ variable eline 0 eline !
   token count ncopy
   namebuf peekd dir-find dup >r 0< EFILE error
   token count ncopy ( dir-find uses `findbuf` )
-  namebuf peekd dir-find 0>= EFILE error
+  namebuf peekd dir-find 0>= EEXIS error
   findbuf peekd r> dirent-name! ;
 : mkdir ( "dir" -- )
   peekd empty? dup eline ! -1 = EDFUL error
   token count ncopy 
   namebuf peekd dir-find 0>= EEXIS error
   namebuf peekd eline? dir-insert
-  balloc dup >r peekd eline? dir-blk-ins
+  balloc dup >r peekd eline? dirent-blk!
   [char] D peekd eline? dirent-type!
   namebuf r> fmtdir ; 
+
+\ TODO: Do more testing
+: copy ( "src" "dst" -- )
+  peekd empty? dup eline ! -1 = EDFUL error
+  token count ncopy 
+  namebuf peekd dir-find dup >r 0< EFILE error
+  token count ncopy
+  namebuf peekd dir-find 0>= EEXIS error
+
+  peekd r> dirent-blk@ dup bcount ballocs dup >r (copy)
+  r> peekd eline? dirent-blk!
+  [char] F peekd eline?  dirent-type!
+  namebuf peekd eline? dirent-name! ;
 
 : mkfile ( "file" -- )
   peekd empty? dup eline ! -1 = EDFUL error
   token count ncopy 
   namebuf peekd dir-find 0>= EEXIS error
   namebuf peekd eline? dir-insert
-  balloc dup bblk peekd eline? dir-blk-ins
+  balloc dup bblk peekd eline? dirent-blk!
   [char] F peekd eline? dirent-type! ;
 : fallocate ( "file" count -- )
   peekd empty? dup eline ! -1 = EDFUL error
@@ -483,7 +520,7 @@ variable eline 0 eline !
   integer? >r
   namebuf peekd dir-find 0>= EEXIS error
   namebuf peekd eline? dir-insert
-  r> ballocs dup link-blank peekd eline? dir-blk-ins
+  r> ballocs dup link-blank peekd eline? dirent-blk!
   [char] F peekd eline? dirent-type!  ;
 : rm token count ncopy 0 (rm) ;
 : rmdir token count ncopy 1 (rm) ; ( "dir" -- )
@@ -505,7 +542,6 @@ variable eline 0 eline !
   repeat
   drop ;
 
-variable exit-shell 0 exit-shell !
 : nope 0 exit-shell ! ; \ TODO: Replace with exit/bye
 : decode ?dup if e>s type ." ?" then ;
 : prompt cr ." CMD> " ;
@@ -528,7 +564,7 @@ variable exit-shell 0 exit-shell !
 : defrag ; \ compact disk
 : chkdsk ;
 : grep ; ( search file -- )
-: copy ;
+
 : help ;
 
 : (file) ( "file" -- blk )
