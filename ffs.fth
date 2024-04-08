@@ -29,7 +29,11 @@
 \ FAT table.
 \ * https://stackoverflow.com/questions/4586972/ Fragmentation
 \ calculation
-\
+\ * More sanity checking could be done, for example we should
+\ never be calling `bfree` on a SPECIAL block. There are many
+\ places where this checking *could* and *should* be done.
+\ * Full path parsing (e.g a/b/c) for all commands.
+\ * Store block in a more optimal way instead of as text?
 \
 \ ## Format
 \
@@ -63,46 +67,8 @@
 \ "BLK" points to an entry in the FAT.
 \
 
-use ffs.fb
-
-wordlist constant {ffs} \ TODO: Add all this to this wordlist
-
-: numberify ( a u -- d -1 | a u 0 : easier than >number )
-  -1 dpl !
-  base @ >r
-  over c@ [char] - = dup >r if +string then
-  over c@ [char] $ = if hex +string 
-    ( dup 0= if dup rdrop r> base ! exit then ) 
-  then
-  2>r 0 dup 2r>
-  begin
-    >number dup
-  while over c@ [char] . <>
-    if rot drop rot r> 2drop 0 r> base ! exit then
-    1- dpl ! 1+ dpl @
-  repeat
-  2drop r> if dnegate then r> base ! -1 ;
-: token bl word ; \ TODO: Throw error if no word
-: nul? count nip 0= ; ( a -- f : is counted word empty? )
-: grab ( <word> -- a : get word from input stream  )
-  begin token dup nul? 0= ?exit drop query again ;
-: integer grab count numberify nip ; ( <num> -- n f : get int )
-: integer? integer 0= dpl @ 0>= or -$18 and throw ;
-
-: -+ drop swap 0< if negate then ;
-: nget ( "123" -- : get a single signed number )
-  token dup 1+ c@ [char] - = tuck -
-  0 0 rot convert drop ( should throw if not number... )
-  -+ ;
-
-: line ( k l -- a u )
- [ $6 ] literal lshift swap block + [ $40 ] literal ;
-\ : loadline line evaluate ; ( k l -- ??? : execute a line! )
 
 
-defined ?depth 0= [if]
-: ?depth depth 1- > -4 and throw ;
-[then]
 
 defined (order) 0= [if]
 : (order) ( w wid*n n -- wid*n w n )
@@ -114,33 +80,25 @@ defined (order) 0= [if]
 : +order dup >r -order get-order r> swap 1+ set-order ;
 [then]
 
-defined b/buf 0= [if] 1024 constant b/buf [endif]
+defined eforth [if]
+system +order
+: wordlist here cell allot 0 over ! ; ( -- wid : alloc wid )
+: s" postpone $" [ ' count ] literal compile, ; immediate
+\ "
+.( NOT YET IMPLEMENTED IN SUBLEQ EFORTH ) cr
+bye
+: quine source type cr ; ' quine <ok> !
+[else]
+use ffs.fb
+[then]
 
-\ TODO: Modify editor to work with FAT table, or make a new
-\ one to work with it.
-defined editor 0= [if]
-wordlist constant {editor}
-: editor [ {editor} ] literal +order ; ( BLOCK editor )
-{editor} +order definitions
-variable vista 1 vista ! \ Used to be `scr`
-: q [ {editor} ] literal -order ; ( -- : quit editor )
-: ? vista @ . ;    ( -- : print block number of current block )
-: l vista @ list ; ( -- : list current block )
-: x q vista @ load editor ; ( -- : evaluate current block )
-: ia 2 ?depth [ $6 ] literal lshift + vista @ block + tib
-  >in @ + swap source nip >in @ - cmove tib @ >in ! l ;
-: a 0 swap ia ; ( line --, "line" : insert line at )
-: w get-order [ {editor} ] literal #1 ( -- : list cmds )
-     set-order words set-order ; 
-: s update flush ; ( -- : save edited block )
-: n  1 vista +! l ; ( -- : display next block )
-: p -1 vista +! l ; ( -- : display previous block )
-: r vista ! l ; ( k -- : retrieve given block )
-: z vista @ block b/buf blank l ; ( -- : erase current block )
-: d 1 ?depth >r vista @ block r> [ $6 ] literal lshift +
-   [ $40 ] literal blank l ; ( line -- : delete line )
-only forth definitions
-[endif]
+defined ?depth 0= [if]
+: ?depth depth 1- > -4 and throw ;
+[then]
+
+wordlist constant {ffs} \ TODO: Add all this to this wordlist
+
+defined b/buf 0= [if] 1024 constant b/buf [endif]
 
 $0000 constant blk.end      \ End of FAT chain
 $FFFC constant blk.unused   \ Unmapped / Not memory
@@ -167,7 +125,25 @@ enxt constant EDNEM ( directory not empty )
 enxt constant ENFIL ( not a file )
 enxt constant ENDIR ( not a directory )
 enxt constant EARGU ( invalid argument )
+enxt constant EINTN ( internal error )
 drop
+
+: e>s ( code -- )
+  dup EUNKN = if drop s" unknown error" exit then
+  dup EIBLK = if drop s" bad block " exit then
+  dup EFILE = if drop s" file not found " exit then
+  dup EFULL = if drop s" disk full " exit then
+  dup EFSCK = if drop s" corrupt disk " exit then
+  dup EEXIS = if drop s" already exists " exit then
+  dup EPATH = if drop s" path too long " exit then
+  dup EFLEN = if drop s" file length " exit then
+  dup EDFUL = if drop s" directory full " exit then
+  dup EDNEM = if drop s" directory not empty " exit then
+  dup ENFIL = if drop s" not a file " exit then
+  dup ENDIR = if drop s" not a directory " exit then
+  dup EARGU = if drop s" invalid argument " exit then
+  dup EINTN = if drop s" internal error " exit then
+  drop s" unknown" ;
 
 : error swap if throw then drop ; ( f code -- )
 
@@ -189,6 +165,37 @@ variable end      128 end !       \ End block
 variable loaded   0 loaded !      \ Loaded initial program?
 variable eline 0 eline !
 
+: numberify ( a u -- d -1 | a u 0 : easier than >number )
+  -1 dpl !
+  base @ >r
+  over c@ [char] - = dup >r if +string then
+  over c@ [char] $ = if hex +string 
+    ( dup 0= if dup rdrop r> base ! exit then ) 
+  then
+  2>r 0 dup 2r>
+  begin
+    >number dup
+  while over c@ [char] . <>
+    if rot drop rot r> 2drop 0 r> base ! exit then
+    1- dpl ! 1+ dpl @
+  repeat
+  2drop r> if dnegate then r> base ! -1 ;
+: nul? count nip 0= ; ( a -- f : is counted word empty? )
+: token bl word dup nul? EARGU error ; ( -- b )
+: grab ( <word> -- a : get word from input stream  )
+  begin bl word dup nul? 0= ?exit drop query again ;
+: integer grab count numberify nip ; ( <num> -- n f : get int )
+: integer? integer 0= dpl @ 0>= or -$18 and throw ;
+
+: -+ drop swap 0< if negate then ;
+: nget ( "123" -- : get a single signed number )
+  token dup 1+ c@ [char] - = tuck -
+  0 0 rot convert drop ( should throw if not number... )
+  -+ ;
+
+: line ( k l -- a u )
+ [ $6 ] literal lshift swap block + [ $40 ] literal ;
+\ : loadline line evaluate ; ( k l -- ??? : execute a line! )
 : block? ( blk -- blk )
   start @ + dup start @ end @ 1+ within 0= EIBLK error ;
 : addr? block? block ; ( blk -- addr )
@@ -197,6 +204,18 @@ variable eline 0 eline !
 : 16! 2dup c! swap 8 rshift swap 1+ c! update ;
 : 16@ dup c@ swap 1+ c@ 8 lshift or ;
 : link 2* fat addr? + 16@ ; ( blk -- blk )
+\ TODO: Fix previous
+: previous ( head-blk prior-to-blk -- blk f )
+  swap
+  begin
+    2dup link = if
+      nip
+      -1
+      exit
+    then 
+    link
+    dup blk.free =
+  until 2drop 0 ;
 : reserve 2* fat addr? + 16! ( flush ) ; ( blk blk -- )
 : btotal end @ start @ - ;
 : bcheck btotal 4 < -1 and throw ;
@@ -230,61 +249,73 @@ variable eline 0 eline !
     2dup 2* + 16@ blk.free = if nip -1 exit then
     1+
   repeat 2drop 0 0 ;
-: balloc ( -- blk )
+: balloc ( -- blk : allocate single block )
   free? 0= EFULL error dup blk.end swap reserve flush ;
-: bfree ( blk -- : free a linked list ) 
-  begin
-  dup link swap blk.free swap reserve
-  dup blk.end = until flush ; 
-
-\ TODO: Sanity checking (retrieve value and make sure it is
-\ not special / invalid / bad block / etcetera
-\ TODO: Does one extra
-: reserve-range ( blk n -- : allocate range of blocks )
-  ?dup 0= if drop exit then
-  1- for
-    dup 1+ tuck swap reserve
-  next
-  blk.end swap reserve flush ;
-: link-load load ; ( file -- ) \ TODO: Load through FAT
-: link-list list ; ( file -- ) \ TODO: List through FAT
-\ : append ; ( blk file -- ) \ TODO: Append block to FAT list
-\ TODO: Allocate contiguous range
-: contiguous ( n -- blk )
-  ?dup 0= if -1 exit then
-  >r
-  0
-  begin
-    dup < end @
-  while
-    dup link blk.free = if
-      0 begin
-        dup r@ <
-      while
-        2dup + link blk.free <> if drop r@ then
-        \ TODO: Reserve blocks if exist in linked list
-        \ TODO: Skip entire range
-        1+
-      repeat
-      \ reserve-range, exit
-    then
-    1+
-  repeat rdrop drop -1 ;
-
-: dirp? dirp @ 0 maxdir within 0= if 0 dirp ! -2 throw then ;
-: (dir) dirp? dirstk dirp @ cells + ;
-: pushd (dir) ! 1 dirp +! ; ( dir -- )
-: popd dirp @ if -1 dirp +! then (dir) @  ; ( -- dir )
-: peekd popd dup pushd ; ( -- dir )
-: ls peekd block? list ;
-
-: (df)
+: btally ( blk-type -- n )
   0 fat addr? b/buf 2/ 1- for
     dup 16@ 3 pick = if 
      swap 1+ swap
     then
     2 +
   next drop nip ;
+: ballocs ( n -- blk : allocate `n` non-contiguous blocks )
+  ?dup 0= EINTN error
+  dup 1 = if balloc exit then
+  dup blk.free btally > EFULL error
+  blk.end swap
+  1- for
+    balloc tuck reserve
+  next ;
+: bfree ( blk -- : free a linked list ) 
+  begin
+  dup link swap blk.free swap reserve
+  dup blk.end = until flush ; 
+: bcount ( blk -- n )
+  0 swap begin swap 1+ swap link dup blk.end = until drop ;
+: reserve-range ( blk n -- : force allocate contiguous blocks )
+  begin
+    ?dup
+  while
+    dup 1 <= 
+    if over blk.end swap 
+    else over dup 1+ swap then reserve 
+    1- swap 1+ swap
+  repeat drop save ;
+
+: link-load ( file -- )
+  begin dup >r block? load r> link dup blk.end = until drop ; 
+: link-list ( file -- )
+  begin dup >r block? list r> link dup blk.end = until drop ; 
+: link-blank ( file -- )
+  begin dup >r bblk r> link dup blk.end = until drop ;
+: link-more ( file -- ) ; \ TODO: implement
+: fat-append ; ( blk file -- ) \ TODO: Append block to FAT list
+: fat-prepend ; ( blk file -- )
+
+: contiguous? ( blk n -- f : is contiguous range free? )
+  begin
+    ?dup
+  while
+    over link blk.free <> if 2drop 0 exit then
+    1- swap 1+ swap
+  repeat drop -1 ;
+: contiguous ( n -- blk f : find contiguous slab )
+  ?dup 0= if 0 0 exit then
+  >r
+  0
+  begin
+    dup end @ <
+  while
+    dup r@ contiguous? if rdrop -1 exit then
+    r@ +
+  repeat rdrop 2drop 0 0 ;
+: cballoc ( n -- blk f : allocate contiguous slab )
+  dup contiguous if tuck swap reserve-range -1 exit then 0 ;
+: dirp? dirp @ 0 maxdir within 0= if 0 dirp ! -2 throw then ;
+: (dir) dirp? dirstk dirp @ cells + ;
+: pushd (dir) ! 1 dirp +! ; ( dir -- )
+: popd dirp @ if -1 dirp +! then (dir) @  ; ( -- dir )
+: peekd popd dup pushd ; ( -- dir )
 
 \ TODO: Quantify fragmentation, measure largest alloc block
 : df cr
@@ -294,7 +325,7 @@ variable eline 0 eline !
    ." END BLK:   " end @ u. cr
    ." MAX DIRS:  " maxdir u. cr
    ." MAX:       " end @ start @ - dup . ." / " b/buf * u. cr
-   ." FREE:      " blk.free (df) dup . ." / " b/buf * u. cr ;
+   ." FREE:      " blk.free btally dup . ." / " b/buf * u. cr ;
 
 : .hex base @ >r hex 0 <# # # # # #> type r> base ! ;
 : (.fat)
@@ -323,7 +354,7 @@ variable eline 0 eline !
 : index >la swap addr? + ;
 : dirent-type! index dup >r c! bl r> 1+ c! save ;
 : dirent-type@ index c@ ;
-: dirent-name! 2>r index 2r> cmove save ;
+: dirent-name! index 2 + swap cmove save ;
 : dirent-name@ index 2 + maxname ; 
 : dirent-blk@ ( blk line -- n )
   index maxname + 2 + 5 numberify 0= throw d>s ;
@@ -399,9 +430,37 @@ variable eline 0 eline !
 
 \ wordlist constant {shell} \ TODO: Add commands to this wordlist
 
+: .type ( ch -- f )
+  dup bl <= if drop -1 exit then
+  [char] D = if ." DIR" else ." FILE" then 0 ;
+
+: .dir ( blk -- )
+  cr
+  ( ." /" dup 0 dirent-name@ type cr )
+  1
+  begin
+    dup l/blk <
+  while
+    2dup dirent-type@ bl <= if 2drop exit then
+    2dup dirent-type@ [char] D = if ." DIR " else ." FILE" then
+    2 spaces
+    2dup dirent-name@ type space
+    2 spaces
+    2dup dirent-blk@ bcount u.
+    cr
+    1+
+  repeat 2drop ;
+
+: ls peekd .dir ; ( : ls peekd block? list ; )
 \ TODO: Mount read-only, reload init block? More mount opts
 : mount 0 dirp ! dirstart pushd ;
 : fdisk bcheck fmt.init fmt.fat fmt.blks fmt.root mount ; 
+: rename ( "file" "file" -- )
+  token count ncopy
+  namebuf peekd dir-find dup >r 0< EFILE error
+  token count ncopy ( dir-find uses `findbuf` )
+  namebuf peekd dir-find 0>= EFILE error
+  findbuf peekd r> dirent-name! ;
 : mkdir ( "dir" -- )
   peekd empty? dup eline ! -1 = EDFUL error
   token count ncopy 
@@ -418,10 +477,17 @@ variable eline 0 eline !
   namebuf peekd eline? dir-insert
   balloc dup bblk peekd eline? dir-blk-ins
   [char] F peekd eline? dirent-type! ;
+: fallocate ( "file" count -- )
+  peekd empty? dup eline ! -1 = EDFUL error
+  token count ncopy 
+  integer? >r
+  namebuf peekd dir-find 0>= EEXIS error
+  namebuf peekd eline? dir-insert
+  r> ballocs dup link-blank peekd eline? dir-blk-ins
+  [char] F peekd eline? dirent-type!  ;
 : rm token count ncopy 0 (rm) ;
 : rmdir token count ncopy 1 (rm) ; ( "dir" -- )
 : cd  ( "dir" -- )
-  \ TODO: Full path parsing (e.g. A/B/C) + error checking
   token count 2dup s" ." compare 0= if 2drop exit then
   2dup s" .." compare 0= if 2drop popd drop exit then
   2dup s" /" compare 0= if 2drop /root exit then
@@ -438,15 +504,30 @@ variable eline 0 eline !
     1+
   repeat
   drop ;
-: shell ; \ get line / error handling / execute
+
+variable exit-shell 0 exit-shell !
+: nope 0 exit-shell ! ; \ TODO: Replace with exit/bye
+: decode ?dup if e>s type ." ?" then ;
+: prompt cr ." CMD> " ;
+: (shell) \ TODO: Implement
+  grab count
+  \ TODO: Find file, execute? Path var? Execute command
+  \ TODO: Error code handling
+  \ TODO: Set error var %ERRORLEVEL%
+  evaluate
+;
+: shell \ get line / error handling / execute
+  \ TODO: Load shell vocab only
+  begin
+    prompt 
+    [ ' (shell) ] literal catch decode exit-shell @ 
+  until ; 
 : tree ; \ recursive tree view
 : deltree ; \ recursive delete
-: rename ; \ ( token token )
 : stat ;
-: more ;
 : defrag ; \ compact disk
 : chkdsk ;
-: grep ;
+: grep ; ( search file -- )
 : copy ;
 : help ;
 
@@ -456,9 +537,35 @@ variable eline 0 eline !
   peekd over dirent-type@ [char] D = ENFIL error
   peekd swap dirent-blk@ ;
 
-: cat (file) block? link-list ;
-: exe (file) block? link-load  ; 
+: cat (file) link-list ;
+: more (file) link-more ;
+: exe (file) link-load  ; 
 
+\ TODO: Modify editor to work with FAT table, or make a new
+\ one to work with it.
+defined editor 0= [if]
+wordlist constant {editor}
+: editor [ {editor} ] literal +order ; ( BLOCK editor )
+{editor} +order definitions
+variable vista 1 vista ! \ Used to be `scr`
+: q [ {editor} ] literal -order ; ( -- : quit editor )
+: ? vista @ . ;    ( -- : print block number of current block )
+: l vista @ list ; ( -- : list current block )
+: x q vista @ load editor ; ( -- : evaluate current block )
+: ia 2 ?depth [ $6 ] literal lshift + vista @ block + tib
+  >in @ + swap source nip >in @ - cmove tib @ >in ! l ;
+: a 0 swap ia ; ( line --, "line" : insert line at )
+: w get-order [ {editor} ] literal #1 ( -- : list cmds )
+     set-order words set-order ; 
+: s update flush ; ( -- : save edited block )
+: n  1 vista +! l ; ( -- : display next block )
+: p -1 vista +! l ; ( -- : display previous block )
+: r vista ! l ; ( k -- : retrieve given block )
+: z vista @ block b/buf blank l ; ( -- : erase current block )
+: d 1 ?depth >r vista @ block r> [ $6 ] literal lshift +
+   [ $40 ] literal blank l ; ( line -- : delete line )
+only forth definitions
+[endif]
 {editor} +order
 : edit (file) block? vista ! editor ; ( "file" -- )
 {editor} -order
@@ -469,7 +576,9 @@ variable eline 0 eline !
 : touch mkfile ;
 : chdir cd ;
 : del rm ;
-: erase rm ;
+: sh shell ;
+\ TODO: Full disk format
+\ : erase rm ;
 
 
 0 block? load
@@ -478,6 +587,6 @@ loaded @ 0= [if]
 fdisk
 .( Done ) cr
 [else]
-mount \ TODO: Better mount
+mount
 [then]
 
