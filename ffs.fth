@@ -38,6 +38,8 @@
 \ * Find orphaned nodes, data-structure checking, checksums?
 \ * Secure erase
 \ * Executable and read-only types
+\ * Different block sizes? 512 bytes blocks might be more
+\ suitable for SUBLEQ eForth, or even 256 byte blocks
 \
 \ ## Format
 \
@@ -166,7 +168,7 @@ variable read-only 0 read-only !
 variable version  $0100 version ! \ Version
 
 defined eforth [if]
-variable start    64 start !      \ Starting block
+variable start    65 start !      \ Starting block
 variable end      126 end !       \ End block
 [else]
 variable start    1 start !       \ Starting block
@@ -463,19 +465,18 @@ variable file-ptr \ pointer within block
 
 \ TODO: Modify editor to work with FAT table, or make a new
 \ one to work with it.
-wordlist constant {editor}
+wordlist constant {edlin}
+: edlin [ {edlin} ] literal +order ; ( BLOCK editor )
+{edlin} +order definitions
 variable vista 1 vista ! \ Used to be `scr`
-defined editor 0= [if]
-: editor [ {editor} ] literal +order ; ( BLOCK editor )
-{editor} +order definitions
-: q [ {editor} ] literal -order ; ( -- : quit editor )
+: q [ {edlin} ] literal -order ; ( -- : quit editor )
 : ? vista @ . ;    ( -- : print block number of current block )
 : l vista @ list ; ( -- : list current block )
-: x q vista @ load editor ; ( -- : evaluate current block )
+: x q vista @ load edlin ; ( -- : evaluate current block )
 : ia 2 ?depth [ $6 ] literal lshift + vista @ block + tib
   >in @ + swap source nip >in @ - cmove tib @ >in ! l ;
 : a 0 swap ia ; : i a ; ( line --, "line" : insert line at )
-: w get-order [ {editor} ] literal #1 ( -- : list cmds )
+: w get-order [ {edlin} ] literal #1 ( -- : list cmds )
      set-order words set-order ; 
 : s save ; ( -- : save edited block )
 : n  1 vista +! l ; ( -- : display next block )
@@ -485,7 +486,6 @@ defined editor 0= [if]
 : d 1 ?depth >r vista @ block r> [ $6 ] literal lshift +
    [ $40 ] literal blank l ; ( line -- : delete line )
 only forth definitions
-[then]
 
 : .dir ( blk -- )
   cr
@@ -616,9 +616,9 @@ only forth definitions
 : exe (file) link-load  ; ( "file" -- )
 : hexdump (file) link-xdump ; ( "file" -- )
 
-{editor} +order
-: edit (file) block? vista ! editor ; ( "file" -- )
-{editor} -order
+{edlin} +order
+: edit (file) block? vista ! edlin ; ( "file" -- )
+{edlin} -order
 
 
 \ Aliases
@@ -628,6 +628,7 @@ only forth definitions
 : chdir cd ;
 : del rm ;
 : sh shell ;
+: ed edit ;
 \ : erase rm ;
 \ : bye halt ;
 \ : exit halt ;
