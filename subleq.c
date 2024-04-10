@@ -1,5 +1,4 @@
 #include <stdint.h>
-#include <stdlib.h>
 #include <stdio.h>
 
 #define MAX(X, Y) ((X) > (Y) ? (X) : (Y))
@@ -11,7 +10,7 @@ static u16 m[1<<16], max = 0, pc = 0;
 int main(int argc, char **argv) {
 	if (setvbuf(stdout, NULL, _IONBF, 0) < 0)
 		return 1;
-	for (long i = 1, d = 0; i < argc; i++) {
+	for (long i = 1, d = 0; i < (argc - (argc > 2)); i++) {
 		FILE *f = fopen(argv[i], "rb");
 		if (!f)
 			return 2;
@@ -36,9 +35,8 @@ int main(int argc, char **argv) {
 			max = MAX(max, b);
 		}
 	}
-	const char *disk = getenv("DISK");
-	if (disk) {
-		FILE *f = fopen(disk, "wb");
+	if (argc > 2) {
+		FILE *f = fopen(argv[argc - 1], "wb");
 		if (!f)
 			return 5;
 		for (unsigned i = 0; i < max; i++) {

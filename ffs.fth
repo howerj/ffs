@@ -4,22 +4,16 @@
 \
 \ ## TO DO
 \ 
-\ * Implement basic functionality, then expand upon it, making
-\ a Forth Disk Operating System. 
 \ * Rewrite `list` so we have more control over output?
 \ * Shell loop that handles custom error
-\ * Write variables to first block
 \ * C utility for manipulating disk images / collating
 \ files.
 \ * Documentation including file system limitations
 \ The first block contains executable code and is executed in
 \ an attempt to mount the file system.
-\ * Use $" instead of s"?
 \ * If "BYE" is called within an executed script, this needs
 \ ignore, that can be done by redefining it.
-\ * Port to SUBLEQ eForth <https://github.com/howerj/subleq>
 \ * Use 32 directories per block?
-\ * Allow multiple disks? (store globals in structure)
 \ * Hide internal words in a wordlist
 \ * Unit tests, online help, ...
 \ * Optional case insensitivity in file names
@@ -40,6 +34,10 @@
 \ * Executable and read-only types
 \ * Different block sizes? 512 bytes blocks might be more
 \ suitable for SUBLEQ eForth, or even 256 byte blocks
+\ * For SUBLEQ eFORTH we could mark the first 64 blocks as 
+\ being special, as well as the last block, and not use
+\ offsets. This would allow the file system direct access to
+\ the SUBLEQ code, including tasks.
 \
 \ ## Format
 \
@@ -89,8 +87,6 @@ system +order
 : wordlist here cell allot 0 over ! ; ( -- wid : alloc wid )
 : s" postpone $" [ ' count ] literal compile, ; immediate
 \ "
-.( NOT YET IMPLEMENTED IN SUBLEQ EFORTH ) cr
-\ bye
 : quine source type cr ; ' quine <ok> !
 [else]
 use ffs.fb
@@ -217,17 +213,16 @@ variable file-ptr \ pointer within block
 : 16! 2dup c! swap 8 rshift swap 1+ c! modify ;
 : 16@ dup c@ swap 1+ c@ 8 lshift or ;
 : link 2* fat addr? + 16@ ; ( blk -- blk )
-: previous ( head-blk prior-to-blk -- blk f )
+: previous ( head-blk prior-to-blk -- blk )
   swap
   begin
     2dup link = if
       nip
-      -1
       exit
     then 
     link
     dup blk.end =
-  until 2drop 0 0 ;
+  until drop ;
 : reserve 2* fat addr? + 16! modify ; ( blk blk -- )
 : btotal end @ start @ - ;
 : bcheck btotal 4 < -1 and throw ;
@@ -241,6 +236,7 @@ variable file-ptr \ pointer within block
   blk.special init reserve
   blk.special fat reserve
   blk.special dirstart reserve
+  \ TODO: Fix for subleq
   dirstart 1+
   begin
     end @ over >
@@ -251,8 +247,10 @@ variable file-ptr \ pointer within block
   save ;
 : bblk addr? b/buf blank save ; ( blk -- )
 : fblk addr? b/buf erase save ; ( blk -- )
-: fblks over - 1- for dup fblk 1+ next drop ; ( lo hi -- )
-: fmt.blks dirstart end @ fblks ;
+: fmt.blks
+  dirstart end @ dirstart - start @ - 1- for
+    dup fblk 1+
+  next drop ;
 : free? ( -- blk f )
   fat addr? 0
   begin
@@ -322,7 +320,7 @@ variable file-ptr \ pointer within block
 \ `blk.end`, `balloc` does however. This is so another linked
 \ list can be appended. It could set it intelligently 
 \ however...
-: fat-append fat-end reserve ; ( blk file -- )
+: fat-append fat-end reserve save ; ( blk file -- )
 : contiguous? ( blk n -- f : is contiguous range free? )
   begin
     ?dup
@@ -463,8 +461,7 @@ variable file-ptr \ pointer within block
     blk.end =
   until ( <> throw ) 2drop ;
 
-\ TODO: Modify editor to work with FAT table, or make a new
-\ one to work with it.
+0 [if]
 wordlist constant {edlin}
 : edlin [ {edlin} ] literal +order ; ( BLOCK editor )
 {edlin} +order definitions
@@ -486,6 +483,37 @@ variable vista 1 vista ! \ Used to be `scr`
 : d 1 ?depth >r vista @ block r> [ $6 ] literal lshift +
    [ $40 ] literal blank l ; ( line -- : delete line )
 only forth definitions
+[then]
+
+wordlist constant {edlin}
+: edlin [ {edlin} ] literal +order ; ( BLOCK editor )
+{edlin} +order definitions
+variable vista 1 vista ! \ Used to be `scr`
+variable head 1 head !
+\ TODO: Delete block from linked list command 
+: q [ {edlin} ] literal -order ; ( -- : quit editor )
+: ? vista @ . ;    ( -- : print block number of current block )
+: l vista @ block? list ; ( -- : list current block )
+\ : x q head @ link-load edlin ; ( -- : exe file )
+: x q vista @ block? load edlin ; ( -- exe block )
+: ia 2 ?depth [ $6 ] literal lshift + vista @ addr? + tib
+  >in @ + swap source nip >in @ - cmove tib @ >in ! l ;
+: a 0 swap ia ; : i a ; ( line --, "line" : insert line at )
+: w get-order [ {edlin} ] literal #1 ( -- : list cmds )
+     set-order words set-order ; 
+: s save ; ( -- : save edited block )
+: n vista @ link blk.end = if 
+    balloc dup bblk head @ fat-append 
+  then
+  vista @ link vista ! l ;
+\ : n vista @ link blk.end = ?exit vista @ link vista ! l ;
+: p head @ vista @ previous vista ! l ; ( -- : prev block )
+\ : r vista ! l ; ( k -- : retrieve given block )
+: z vista @ addr? b/buf blank l ; ( -- : erase current block )
+: d 1 ?depth >r vista @ addr? r> [ $6 ] literal lshift +
+   [ $40 ] literal blank l ; ( line -- : delete line )
+only forth definitions
+
 
 : .dir ( blk -- )
   cr
@@ -527,6 +555,9 @@ only forth definitions
 : full? ( -- is cwd full? )
   peekd empty? dup eline ! -1 = EDFUL error ;
 
+\ : file? namebuf peekd dir-find dup 0>= EEXIS error ;
+\ : nfile? 
+
 \ wordlist constant {shell}
 \ TODO: Use this
 \ {shell} +order definitions
@@ -534,8 +565,10 @@ only forth definitions
 : halt save 1 exit-shell !  ;
 : ls peekd .dir ; 
 : dir peekd block? list ;
+
 : mount init block? load 0 dirp ! dirstart pushd ;
 : fdisk bcheck fmt.init fmt.fat fmt.blks fmt.root mount ; 
+\ TODO: `move`, allow moving into subdirectories or parent dirs
 : rename ( "file" "file" -- )
   narg
   namebuf peekd dir-find dup >r 0< EFILE error
@@ -575,7 +608,36 @@ only forth definitions
   namebuf peekd dir-find 0>= EEXIS error
   namebuf found? dirent-name!
   r> ballocs dup link-blank found? dirent-blk!
-  [char] F found? dirent-type!  ;
+  [char] F found? dirent-type! ;
+: fgrow ( "file" count -- )
+  narg integer? 
+  namebuf peekd dir-find dup >r 0< ENFIL error
+  ballocs dup link-blank peekd r> dirent-blk@ fat-append save ;
+
+\ TODO: Implement
+\ : ftruncate 
+\   narg integer?
+\   namebuf peekd dir-find dup >r 0< ENFIL error
+\   peek r> dirent-blk@
+\   dup bcount 
+\ 
+\   begin
+\ 
+\   while
+\ 
+\   repeat
+\ ;
+\ 
+\ \ Does not quite work with the utils that exist
+\ \ as they treat special files as normal files.
+\ : mknod ( "file" node -- )
+\  full?
+\  narg
+\  integer? >r
+\  namebuf peekd dir-find 0>= EEXIS error
+\  namebuf found? dirent-name!
+\  r> found? dirent-blk! 
+\  [char] S found? dirent-type! ;
 : rm narg 0 (rm) ; ( "file" -- )
 : rmdir narg 1 (rm) ; ( "dir" -- )
 : cd  ( "dir" -- )
@@ -595,20 +657,30 @@ only forth definitions
     1+
   repeat
   drop ;
-
+: tree ( -- : tree view of file system, could be improved )
+  cr pwd ls
+  1
+  begin
+    dup l/blk <
+  while
+    peekd over dirent-type@ bl <= if drop exit then
+    peekd over dirent-type@ [char] D = if
+      peekd over dirent-blk@ pushd recurse popd drop
+    then
+    1+
+  repeat drop ; 
 : shell \ get line / error handling / execute
 ( only {shell} +order )
   begin
     cmd>
     [ ' (shell) ] literal catch elucidate exit-shell @ 
   until 0 exit-shell ! ; 
-: tree ; \ recursive tree view
+
 : deltree ; \ recursive delete
 : stat ;
 : defrag ; \ compact disk
 : chkdsk ;
 : grep ; ( search file -- )
-
 : help ;
 
 : cat (file) link-list ; ( "file" -- )
@@ -617,7 +689,8 @@ only forth definitions
 : hexdump (file) link-xdump ; ( "file" -- )
 
 {edlin} +order
-: edit (file) block? vista ! edlin ; ( "file" -- )
+\ TODO: Create file if it does not exist
+: edit (file) dup head ! vista ! edlin ; ( "file" -- )
 {edlin} -order
 
 

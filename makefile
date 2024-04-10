@@ -16,8 +16,12 @@ subleq: subleq.c
 forth: subleq subleq.dec
 	./subleq subleq.dec
 
-subleq-ffs: subleq subleq.dec
-	cat ffs.fth /dev/stdin | ./subleq subleq.dec
+subleq-ffs: subleq disk.dec
+	./subleq disk.dec _disk.dec
+	mv _disk.dec disk.dec
+
+disk.dec: subleq subleq.dec ffs.fth
+	./subleq subleq.dec $@ < ffs.fth
 
 clean:
-	rm -fv ffs.fb subleq *.exe
+	git clean -dffx

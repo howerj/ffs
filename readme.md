@@ -9,8 +9,8 @@
 
 This is the N-th attempt a simple Forth block based file system. See the Forth
 file [ffs.fth][] for more information, including a to-do list and any
-documentation. This project is very much a work in progress, it currently
-requires <https://gforth.org/>.
+documentation. This project is very much a work in progress, it works under
+<https://gforth.org/> and also SUBLEQ eForth (see <https://github.com/howerj/subleq>).
 
 ## References
 
