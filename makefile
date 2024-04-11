@@ -1,12 +1,34 @@
 CFLAGS=-std=c99 -Wall -Wextra -pedantic -O2 -fwrapv
+SRC=ffs.fth
 
-.PHONY: run dump clean subleq-ffs
+.PHONY: all default help run dump clean disk subleq-ffs
+
+default all: help
+
+help:
+	@echo "FORTH BLOCK BASED FILE SYSTEM"
+	@echo
+	@echo "* Author:  Richard James Howe"
+	@echo "* License: Public Domain / The Unlicense"
+	@echo "* Email:   howe.r.j.89@gmail.com"
+	@echo "* Repo:    https://github.com/howerj/ffs"
+	@echo
+	@echo "Makefile commands:"
+	@echo
+	@echo "* run   : run gforth on '${SRC}'"
+	@echo "* dump  : make 'ffs.fb' and hexdump it"
+	@echo "* forth : run unaltered SUBLEQ eFORTH"
+	@echo "* disk  : make a disk image using '${SRC}' for SUBLEQ eFORTH"
+	@echo "* clean : BANG AND THE DIRT IS GONE"
+	@echo
+	@echo "For documentation please see '${SRC}' or 'readme.md'"
+	@echo
 
 run:
-	gforth ffs.fth
+	gforth ${SRC}
 
-ffs.fb: ffs.fth
-	gforth $<
+ffs.fb: ${SRC}
+	echo bye | gforth $<
 
 dump: ffs.fb
 	hexdump -C $<
@@ -16,12 +38,12 @@ subleq: subleq.c
 forth: subleq subleq.dec
 	./subleq subleq.dec
 
-subleq-ffs: subleq disk.dec
+disk: subleq disk.dec
 	./subleq disk.dec _disk.dec
 	mv _disk.dec disk.dec
 
-disk.dec: subleq subleq.dec ffs.fth
-	./subleq subleq.dec $@ < ffs.fth
+disk.dec: subleq subleq.dec ${SRC}
+	./subleq subleq.dec $@ < ${SRC}
 
 clean:
 	git clean -dffx

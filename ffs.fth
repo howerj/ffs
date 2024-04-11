@@ -1,4 +1,10 @@
-\ Simple Forth File System
+\ # Simple Forth File System
+\
+\ * Author: Richard James Howe
+\ * License: Public Domain / The Unlicense
+\ * Repo: <https://github.com/howerj/ffs>
+\ * Email: <mailto:howe.r.j.89@gmail.com>
+\
 \
 \ This project is a work in progress.
 \
@@ -12,28 +18,22 @@
 \ The first block contains executable code and is executed in
 \ an attempt to mount the file system.
 \ * If "BYE" is called within an executed script, this needs
-\ ignore, that can be done by redefining it.
+\ ignoring, that can be done by redefining it.
 \ * Use 32 directories per block?
 \ * Hide internal words in a wordlist
 \ * Unit tests, online help, ...
 \ * Optional case insensitivity in file names
-\ * Map special files into root directory?
-\ * Detect bad blocks with a wrapper around `block`, setting
-\ FAT table.
 \ * https://stackoverflow.com/questions/4586972/ Fragmentation
 \ calculation
 \ * More sanity checking could be done, for example we should
 \ never be calling `bfree` on a SPECIAL block. There are many
 \ places where this checking *could* and *should* be done.
 \ * Full path parsing (e.g a/b/c) for all commands.
-\ * Store block in a more optimal way instead of as text?
 \ * Zero length files
 \ * Refactor system, factor words
 \ * Find orphaned nodes, data-structure checking, checksums?
 \ * Secure erase
 \ * Executable and read-only types
-\ * Different block sizes? 512 bytes blocks might be more
-\ suitable for SUBLEQ eForth, or even 256 byte blocks
 \ * For SUBLEQ eFORTH we could mark the first 64 blocks as 
 \ being special, as well as the last block, and not use
 \ offsets. This would allow the file system direct access to
@@ -60,17 +60,27 @@
 \
 \ ### Text Directory Format
 \
-\        \ DIRNAME BLK
-\        F FILE.FTH  BLK LEN
-\        T FILE.TXT  BLK LEN
+\ The directory format is incredibly simple, it consists of
+\ fixed width text fields that are human and machine readable.
+\ A directory fits into a single block, which puts an upper
+\ limit on a directory size (without extensions that look up
+\ the next entry in the FAT table).
+\
+\        \ DIRNAME   BLK
+\        F FILE.FTH  BLK
+\        F FILE.TXT  BLK
 \        D DIRECTORY BLK
+\        S FILE.SPC  BLK
 \
-\ Newer directories/files that are more like variable length
-\ files will use a different starting word instead of "F"/"T"
-\ or "D". "LEN" is the number of bytes used in the last block.
-\ "BLK" points to an entry in the FAT.
+\ ### File Format
 \
-
+\ ### Special Blocks
+\
+\ ### Commands
+\
+\ ### Block Editor
+\
+\
 
 defined (order) 0= [if]
 : (order) ( w wid*n n -- wid*n w n )
@@ -100,37 +110,27 @@ defined spaces 0= [if]
 : spaces begin ?dup 0> while bl emit 1- repeat ;
 [then]
 
-wordlist constant {ffs} \ TODO: Add all this to this wordlist
+wordlist constant {ffs}
+{ffs} +order definitions
 
 defined b/buf 0= [if] 1024 constant b/buf [then]
 defined d>s 0= [if] : d>s drop ; [then]
 
-$0000 constant blk.end      \ End of FAT chain
-$FFFC constant blk.unused   \ Unmapped / Not memory
-$FFFD constant blk.bad-blk  \ Block is bad
-$FFFE constant blk.special  \ Special blocks
-$FFFF constant blk.free     \ Block is free to use
-16 constant maxname
-8 constant maxdir
-create dirstk maxdir cells allot dirstk maxdir cells erase
-
-: enxt dup 1+ swap ; ( n -- n n )
-
 128
-enxt constant EUNKN ( unknown error )
-enxt constant EIBLK ( bad block )
-enxt constant EFILE ( file not found )
-enxt constant EFULL ( disk full )
-enxt constant EFSCK ( corrupt datastructure / disk )
-enxt constant EEXIS ( already exists )
-enxt constant EPATH ( path too long )
-enxt constant EFLEN ( file length )
-enxt constant EDFUL ( directory full )
-enxt constant EDNEM ( directory not empty )
-enxt constant ENFIL ( not a file )
-enxt constant ENDIR ( not a directory )
-enxt constant EARGU ( invalid argument )
-enxt constant EINTN ( internal error )
+dup 1+ swap constant EUNKN ( unknown error )
+dup 1+ swap constant EIBLK ( bad block )
+dup 1+ swap constant EFILE ( file not found )
+dup 1+ swap constant EFULL ( disk full )
+dup 1+ swap constant EFSCK ( corrupt datastructure / disk )
+dup 1+ swap constant EEXIS ( already exists )
+dup 1+ swap constant EPATH ( path too long )
+dup 1+ swap constant EFLEN ( file length )
+dup 1+ swap constant EDFUL ( directory full )
+dup 1+ swap constant EDNEM ( directory not empty )
+dup 1+ swap constant ENFIL ( not a file )
+dup 1+ swap constant ENDIR ( not a directory )
+dup 1+ swap constant EARGU ( invalid argument )
+dup 1+ swap constant EINTN ( internal error )
 drop
 
 : e>s ( code -- )
@@ -154,8 +154,16 @@ variable error-level 0 error-level !
 : elucidate dup error-level ! ?dup if cr e>s type ." ?" then ;
 : error swap if dup elucidate throw then drop ; ( f code -- )
 
-: namebuf: create here maxname dup allot blank does> maxname ;
+$0000 constant blk.end      \ End of FAT chain
+$FFFC constant blk.unused   \ Unmapped / Not memory
+$FFFD constant blk.bad-blk  \ Block is bad
+$FFFE constant blk.special  \ Special blocks
+$FFFF constant blk.free     \ Block is free to use
+16 constant maxname
+8 constant maxdir
+create dirstk maxdir cells allot dirstk maxdir cells erase
 
+: namebuf: create here maxname dup allot blank does> maxname ;
 namebuf: namebuf
 namebuf: findbuf
 create copy-store 1024 allot
@@ -170,12 +178,14 @@ variable end      126 end !       \ End block
 variable start    1 start !       \ Starting block
 variable end      128 end !       \ End block
 [then]
+1 constant dsl                    \ Directory Start Line
 0 constant init                   \ Initial program block
 1 constant fat                    \ FAT Block
 2 constant dirstart               \ Top level directory
 16 constant l/blk                 \ Lines per block
 64 constant c/blk                 \ Columns per block
 16 constant d/blk                 \ Directories per block
+64 constant dirsz
 variable loaded   0 loaded !      \ Loaded initial program?
 variable eline 0 eline !
 variable exit-shell 0 exit-shell !
@@ -212,7 +222,10 @@ variable file-ptr \ pointer within block
 : eline? eline @ ;
 : 16! 2dup c! swap 8 rshift swap 1+ c! modify ;
 : 16@ dup c@ swap 1+ c@ 8 lshift or ;
-: link 2* fat addr? + 16@ ; ( blk -- blk )
+: linkable dup dirstart 1+ end @ 1+ within ; ( blk -- blk f )
+: link ( blk -- blk : load next block from FAT )
+  linkable 0= if drop blk.end exit then
+  2* fat addr? + 16@ ; ( blk -- blk )
 : previous ( head-blk prior-to-blk -- blk )
   swap
   begin
@@ -239,7 +252,7 @@ variable file-ptr \ pointer within block
   \ TODO: Fix for subleq
   dirstart 1+
   begin
-    end @ over >
+    end @ start @ - over >
   while
     blk.free over reserve 1+
   repeat
@@ -268,6 +281,7 @@ variable file-ptr \ pointer within block
     then
     2 +
   next drop nip ;
+\ TODO: Link in ascending order
 : ballocs ( n -- blk : allocate `n` non-contiguous blocks )
   ?dup 0= EINTN error
   dup 1 = if drop balloc exit then
@@ -276,9 +290,13 @@ variable file-ptr \ pointer within block
   1- for
     balloc tuck reserve
   next ;
+: bvalid? ( blk -- blk : can we free this block? )
+  dup dirstart <= EIBLK error
+  dup link blk.special = EIBLK error
+  dup end @ >= EIBLK error ;
 : bfree ( blk -- : free a linked list ) 
   begin
-  dup link swap blk.free swap reserve
+  dup link swap blk.free swap bvalid? reserve
   dup blk.end = until save ; 
 : bcount ( blk -- n )
   0 swap begin swap 1+ swap link dup blk.end = until drop ;
@@ -305,7 +323,7 @@ variable file-ptr \ pointer within block
 : link-blank ( file -- )
   begin dup bblk link dup blk.end = until drop ;
 : link-xdump ( file -- )
-  begin dup block? xdump link dup blk.end = until drop ; 
+  begin dup xdump link dup blk.end = until drop ; 
 : more? key [ 32 invert ] literal and [char] Q = ;
 : more> cr ." --- (q)uit? --- " ;
 : moar block? list more> more? ;
@@ -380,7 +398,7 @@ variable file-ptr \ pointer within block
 : fclear findbuf blank ; ( -- )
 : fcopy fclear nlen? findbuf drop swap cmove ; ( c-addr u )
 : hexp base @ >r hex 0 <# # # # # [char] $ hold #> r> base ! ;
-: >la dup 0 16 within 0= -1 and throw c/blk * ;
+: >la dup 0 d/blk 1+ within 0= -1 and throw dirsz * ;
 : index >la swap addr? + ;
 : dirent-type! index dup >r c! bl r> 1+ c! save ;
 : dirent-type@ index c@ ;
@@ -391,7 +409,7 @@ variable file-ptr \ pointer within block
 : dirent-blk!  ( n blk line -- )
   index maxname + 2 + >r hexp r> swap cmove save ;
 : dirent-erase ( blk line )
-  >la swap addr? + c/blk blank modify ; 
+  >la swap addr? + dirsz blank modify ; 
 : >copy addr? copy-store b/buf cmove ;
 : copy> addr? copy-store swap b/buf cmove ;
 
@@ -403,11 +421,30 @@ variable file-ptr \ pointer within block
   r@ r> 0 dirent-blk! 
   save ;
 
+\ defined aft 0= [if]
+\ : aft  ( -- aft for gforth )
+\    2drop drop
+\    postpone branch >mark
+\    postpone begin drop do-dest
+\    postpone but ; immediate
+\ [then]
+\ 
+\ : >upper dup 65 91 within if 32 xor then ;
+\ : icompare ( a1 u1 a2 u2 -- n : string comparison )
+\   rot
+\   over - ?dup if >r 2drop r> nip exit then
+\   for ( a1 a2 )
+\     aft
+\       count >upper rot count >upper rot - ?dup
+\       if rdrop nip nip exit then
+\     then
+\   next 2drop 0 ;
+ 
 : dir-find ( c-addr u blk -- line | -1 )
   >r fcopy
-  1 ( skip first line at zero, this contains directory info )
+  dsl ( skip first line at zero, this contains directory info )
   begin
-    dup l/blk <
+    dup d/blk <
   while
     dup r@ swap dirent-name@ findbuf compare 
     0= if rdrop exit then
@@ -426,29 +463,31 @@ variable file-ptr \ pointer within block
   repeat 2drop r> ;
 
 : empty? ( blk -- line | -1 : get empty line )
-  addr? c/blk + 1 ( skip first line )
+  addr? dirsz + dsl ( skip first line )
   begin
-   dup l/blk <
+   dup d/blk <
   while
    over c@ bl <= if nip exit then
-   swap c/blk + swap 1+
+   swap dirsz + swap 1+
   repeat
   2drop -1 ;
-: is-empty? empty? 1 <> ; ( blk -- f )
+: is-empty? empty? dsl <> ; ( blk -- f )
 : fmt.root 
   s"  [ROOT]" ncopy namebuf dirstart
   fmtdir blk.end dirstart reserve save ;
 : /root dirp @ for popd drop next ;
 : dir? dirent-type@ [char] D = ; ( dir line -- f )
+: special? dirent-type@ [char] S = ; ( dir line -- f)
+: file? dirent-type@ [char] F = ; ( dir line -- f)
 : (rm) ( f -- )
   namebuf peekd dir-find dup >r 0< EFILE error
   peekd r@ dir? if
     0= ENFIL error
     peekd r@ dirent-blk@ is-empty? EDNEM error
   then
-  peekd r@ dirent-blk@ bfree
+  peekd r@ special? 0= if peekd r@ dirent-blk@ bfree then
   peekd r@ dirent-erase
-  peekd addr? r@ c/blk * + dup c/blk + swap b/buf r@ 1+ c/blk * 
+  peekd addr? r@ dirsz * + dup dirsz + swap b/buf r@ 1+ dirsz * 
   - cmove
   save rdrop drop ;
 
@@ -461,73 +500,57 @@ variable file-ptr \ pointer within block
     blk.end =
   until ( <> throw ) 2drop ;
 
-0 [if]
-wordlist constant {edlin}
-: edlin [ {edlin} ] literal +order ; ( BLOCK editor )
-{edlin} +order definitions
-variable vista 1 vista ! \ Used to be `scr`
-: q [ {edlin} ] literal -order ; ( -- : quit editor )
-: ? vista @ . ;    ( -- : print block number of current block )
-: l vista @ list ; ( -- : list current block )
-: x q vista @ load edlin ; ( -- : evaluate current block )
-: ia 2 ?depth [ $6 ] literal lshift + vista @ block + tib
-  >in @ + swap source nip >in @ - cmove tib @ >in ! l ;
-: a 0 swap ia ; : i a ; ( line --, "line" : insert line at )
-: w get-order [ {edlin} ] literal #1 ( -- : list cmds )
-     set-order words set-order ; 
-: s save ; ( -- : save edited block )
-: n  1 vista +! l ; ( -- : display next block )
-: p -1 vista +! l ; ( -- : display previous block )
-: r vista ! l ; ( k -- : retrieve given block )
-: z vista @ block b/buf blank l ; ( -- : erase current block )
-: d 1 ?depth >r vista @ block r> [ $6 ] literal lshift +
-   [ $40 ] literal blank l ; ( line -- : delete line )
-only forth definitions
-[then]
-
-wordlist constant {edlin}
-: edlin [ {edlin} ] literal +order ; ( BLOCK editor )
-{edlin} +order definitions
 variable vista 1 vista ! \ Used to be `scr`
 variable head 1 head !
-\ TODO: Delete block from linked list command 
-: q [ {edlin} ] literal -order ; ( -- : quit editor )
+variable line 0 line !
+wordlist constant {edlin}
+: edlin ( BLOCK editor )
+  vista ! head ! 0 line ! [ {edlin} ] literal +order ; 
+{edlin} +order definitions
+\ TODO: Command to delete block from linked list
+\ TODO: Command to yank block, and paste block, and swap blocks
+: s save ; ( -- : save edited block )
+: q s [ {edlin} ] literal -order ; ( -- : quit editor )
 : ? vista @ . ;    ( -- : print block number of current block )
 : l vista @ block? list ; ( -- : list current block )
-\ : x q head @ link-load edlin ; ( -- : exe file )
-: x q vista @ block? load edlin ; ( -- exe block )
+: x q head @ link-load edlin ; ( -- : exe file )
 : ia 2 ?depth [ $6 ] literal lshift + vista @ addr? + tib
   >in @ + swap source nip >in @ - cmove tib @ >in ! l ;
 : a 0 swap ia ; : i a ; ( line --, "line" : insert line at )
-: w get-order [ {edlin} ] literal #1 ( -- : list cmds )
+: w get-order [ {edlin} ] literal 1 ( -- : list cmds )
      set-order words set-order ; 
-: s save ; ( -- : save edited block )
-: n vista @ link blk.end = if 
+: n 0 line ! s vista @ link blk.end = if 
     balloc dup bblk head @ fat-append 
   then
   vista @ link vista ! l ;
-\ : n vista @ link blk.end = ?exit vista @ link vista ! l ;
-: p head @ vista @ previous vista ! l ; ( -- : prev block )
-\ : r vista ! l ; ( k -- : retrieve given block )
+: p ( -- : prev block )
+  0 line ! s head @ vista @ previous vista ! l ; 
 : z vista @ addr? b/buf blank l ; ( -- : erase current block )
 : d 1 ?depth >r vista @ addr? r> [ $6 ] literal lshift +
    [ $40 ] literal blank l ; ( line -- : delete line )
-only forth definitions
+: - line @ -1 line +! line @ 0< if 0 line ! p then ;
+: + line @ a  1 line +! line @ l/blk >= if 0 line ! n then ;
+{edlin} -order {ffs} +order definitions
 
 
 : .dir ( blk -- )
   cr
   ( ." /" dup 0 dirent-name@ type cr )
-  1
+  dsl
   begin
-    dup l/blk <
+    dup d/blk <
   while
     2dup dirent-type@ bl <= if 2drop exit then
-    2dup dirent-type@ [char] D = if ." DIR " else ." FILE" then
-    2 spaces
+    2dup dir?     if ." DIR   " then
+    2dup file?    if ." FILE  " then 
+    2dup special? if ." SPEC  " then
     2dup dirent-name@ type space
     2 spaces
-    2dup dirent-blk@ bcount u.
+    2dup special? if
+      2dup dirent-blk@ ." *" u. 
+    else
+      2dup dirent-blk@ bcount u.
+    then
     cr
     1+
   repeat 2drop ;
@@ -555,13 +578,14 @@ only forth definitions
 : full? ( -- is cwd full? )
   peekd empty? dup eline ! -1 = EDFUL error ;
 
-\ : file? namebuf peekd dir-find dup 0>= EEXIS error ;
+\ : exists? namebuf peekd dir-find dup 0>= EEXIS error ;
 \ : nfile? 
 
 \ wordlist constant {shell}
 \ TODO: Use this
 \ {shell} +order definitions
 
+: fsync save-buffers ;
 : halt save 1 exit-shell !  ;
 : ls peekd .dir ; 
 : dir peekd block? list ;
@@ -575,7 +599,14 @@ only forth definitions
   narg ( dir-find uses `findbuf` )
   namebuf peekd dir-find 0>= EEXIS error
   findbuf peekd r> dirent-name! ;
+\ : move ( "file" "file" -- )
+\  narg
+\  namebuf peekd dir-find dup >r 0< EFILE error
+\  narg peekd dir-find
+\  \ TODO: Is directory?
+\ ;
 : mkdir ( "dir" -- )
+\ TODO: Check dirstack level and prevent creation
   full?
   narg
   namebuf peekd dir-find 0>= EEXIS error
@@ -628,19 +659,17 @@ only forth definitions
 \   repeat
 \ ;
 \ 
-\ \ Does not quite work with the utils that exist
-\ \ as they treat special files as normal files.
-\ : mknod ( "file" node -- )
-\  full?
-\  narg
-\  integer? >r
-\  namebuf peekd dir-find 0>= EEXIS error
-\  namebuf found? dirent-name!
-\  r> found? dirent-blk! 
-\  [char] S found? dirent-type! ;
+: mknod ( "file" node -- )
+  full?
+  narg
+  integer? >r
+  namebuf peekd dir-find 0>= EEXIS error
+  namebuf found? dirent-name!
+  r> found? dirent-blk! 
+  [char] S found? dirent-type! ;
 : rm narg 0 (rm) ; ( "file" -- )
 : rmdir narg 1 (rm) ; ( "dir" -- )
-: cd  ( "dir" -- )
+: cd ( "dir" -- )
   token count 2dup s" ." compare 0= if 2drop exit then
   2dup s" .." compare 0= if 2drop popd drop exit then
   2dup s" /" compare 0= if 2drop /root exit then
@@ -659,9 +688,9 @@ only forth definitions
   drop ;
 : tree ( -- : tree view of file system, could be improved )
   cr pwd ls
-  1
+  dsl
   begin
-    dup l/blk <
+    dup d/blk <
   while
     peekd over dirent-type@ bl <= if drop exit then
     peekd over dirent-type@ [char] D = if
@@ -669,6 +698,22 @@ only forth definitions
     then
     1+
   repeat drop ; 
+
+\ TODO: implement
+\ : (deltree)
+\   dsl
+\   begin
+\     dup d/blk <
+\   while
+\     peekd over dirent-type@ bl <= if drop exit then
+\     peekd over dirent-type@ [char] D = if
+\       peekd over dirent-blk@ pushd recurse popd \ delete
+\     else
+\       \ todo delete file
+\     then
+\     1+
+\   repeat drop ; 
+\ : deltree narg ;
 : shell \ get line / error handling / execute
 ( only {shell} +order )
   begin
@@ -676,11 +721,11 @@ only forth definitions
     [ ' (shell) ] literal catch elucidate exit-shell @ 
   until 0 exit-shell ! ; 
 
-: deltree ; \ recursive delete
 : stat ;
 : defrag ; \ compact disk
 : chkdsk ;
 : grep ; ( search file -- )
+: cmp ;
 : help ;
 
 : cat (file) link-list ; ( "file" -- )
@@ -688,9 +733,13 @@ only forth definitions
 : exe (file) link-load  ; ( "file" -- )
 : hexdump (file) link-xdump ; ( "file" -- )
 
+
 {edlin} +order
 \ TODO: Create file if it does not exist
-: edit (file) dup head ! vista ! edlin ; ( "file" -- )
+\ TODO: Prevent extension of special files
+\ TODO: Add command that auto increments line number and
+\       allocates block if needed.
+: edit (file) dup edlin ; ( "file" -- )
 {edlin} -order
 
 
@@ -702,16 +751,95 @@ only forth definitions
 : del rm ;
 : sh shell ;
 : ed edit ;
-\ : erase rm ;
-\ : bye halt ;
-\ : exit halt ;
-\ : quit halt ;
+: bye halt ;
+: exit halt ;
+: quit halt ;
+: type cat ;
 
-defined eforth [if] .( HERE: ) here u. cr [then]
+defined eforth [if]
+ .( HERE: ) here u. cr 
+\ \ This does not work because `(cold)` resets the vocab
+\
+\ : reboot {ffs} +order mount (cold) ;
+\ ' (cold) 2/ <cold> !
+[then]
 
 mount loaded @ 0= [if]
 cr .( FFS NOT PRESENT, FORMATTING... ) cr
 fdisk
+mknod [BOOT] 0
+mknod [FAT] 1
+touch help.txt
+edit help.txt
++ FORTH FILE SYSTEM HELP AND COMMANDS
++
++ Author: Richard James Howe
++ Repo:   https://github.com/howerj/ffs
++ Email:  howe.r.j.89@gmail.com
++
++ This is a simple DOS like file system for FORTH, it makes
++ it easier to edit and manipulate data than using raw blocks.
++
++ For more information see:
++
++ <https://github.com/howerj/ffs>
++ <https://github.com/howerj/subleq>
++
++ Commands:
++
++ cat / type <FILE>: display a file
++ cd / chdir <DIR>: change working directory to <DIR>
++ cls: clear screen
++ cp / copy <FILE1> <FILE2>: copy <FILE1> to new <FILE2>
++ df: display file system information
++ ed / edit <FILE>: edit a <FILE> with the block editor
++ exe <FILE>: execute source <FILE>
++ fallocate <FILE> <NUM>: make <FILE> with <NUM> blocks
++ fdisk: **WARNING** format disk deleting all data!
++ fgrow <FILE> <NUM>: grow <FILE> by <NUM> blocks
++ fsync: save any block changes
++ halt / quit / bye: safely halt system
++ hexdump <FILE>: hexdump a file
++ ls / dir : list directory
++ mkdir <DIR>: make a directory
++ mknode <FILE> <NUM>: make a special <FILE> with <NUM>
++ more <FILE>: display a file, pause for each block
++ mount: attempt file system mounting
++ pwd: print current working directory
++ rename <DIR/FILE1> <DIR/FILE2>: rename a file or directory
++ rm / del <FILE>: remove a <FILE> and not a <DIR>
++ rmdir <DIR>: remove an empty directory
++ sh / shell: invoke file system shell
++ touch / mkfile <FILE>: make a new file
++ tree: recursively print directories from the current one
++ 
++ 
+n 
++ EDITOR COMMANDS
++ q : quit editor
++ s : save work
++ n : move to next block in file, allocating one if needed
++ p : move to previous block in file
++ + <LINE>: insert <LINE>, advance line count, 'n' if needed
++ - : decrement line count, call 'p' if needed, no <LINE>
++ x : execute current file from the start
++ #line d : delete #line
++ l : list current block we are editing
++ w : list command
++ #line a / i <LINE>: insert <LINE> onto #line of current block
++ #line #row ia <LINE>: insert <LINE> into #line at #row
++ ? : display current block
++ z : blank current block
+q
+touch demo.fth
+edit demo.fth
++ .( HELLO, WORLD ) cr
++ 2 2 + . cr
+q
+mkdir home
+mkdir bin
+
 .( DONE ) cr
 [then]
+
 
