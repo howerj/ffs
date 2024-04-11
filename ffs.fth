@@ -17,11 +17,7 @@
 \ * Documentation including file system limitations
 \ The first block contains executable code and is executed in
 \ an attempt to mount the file system.
-\ * If "BYE" is called within an executed script, this needs
-\ ignoring, that can be done by redefining it.
-\ * Use 32 directories per block?
 \ * Hide internal words in a wordlist
-\ * Unit tests, online help, ...
 \ * Optional case insensitivity in file names
 \ * https://stackoverflow.com/questions/4586972/ Fragmentation
 \ calculation
@@ -178,14 +174,14 @@ variable end      126 end !       \ End block
 variable start    1 start !       \ Starting block
 variable end      128 end !       \ End block
 [then]
-1 constant dsl                    \ Directory Start Line
+2 constant dsl                    \ Directory Start Line
 0 constant init                   \ Initial program block
 1 constant fat                    \ FAT Block
 2 constant dirstart               \ Top level directory
 16 constant l/blk                 \ Lines per block
 64 constant c/blk                 \ Columns per block
-16 constant d/blk                 \ Directories per block
-64 constant dirsz
+32 constant d/blk                 \ Directories per block
+32 constant dirsz
 variable loaded   0 loaded !      \ Loaded initial program?
 variable eline 0 eline !
 variable exit-shell 0 exit-shell !
@@ -249,7 +245,6 @@ variable file-ptr \ pointer within block
   blk.special init reserve
   blk.special fat reserve
   blk.special dirstart reserve
-  \ TODO: Fix for subleq
   dirstart 1+
   begin
     end @ start @ - over >
@@ -339,6 +334,9 @@ variable file-ptr \ pointer within block
 \ list can be appended. It could set it intelligently 
 \ however...
 : fat-append fat-end reserve save ; ( blk file -- )
+\ TODO: calculate largest block allocable, and function
+\ can we allocate block of size N? And how many blocks of
+\ size N can we allocate?
 : contiguous? ( blk n -- f : is contiguous range free? )
   begin
     ?dup
@@ -429,6 +427,9 @@ variable file-ptr \ pointer within block
 \    postpone but ; immediate
 \ [then]
 \ 
+\ \ TODO: Get working in gforth (cannot call `exit` in
+\ \ FOR...NEXT loop in gforth... 
+\ 
 \ : >upper dup 65 91 within if 32 xor then ;
 \ : icompare ( a1 u1 a2 u2 -- n : string comparison )
 \   rot
@@ -463,7 +464,7 @@ variable file-ptr \ pointer within block
   repeat 2drop r> ;
 
 : empty? ( blk -- line | -1 : get empty line )
-  addr? dirsz + dsl ( skip first line )
+  addr? dirsz dsl * + dsl ( skip first line )
   begin
    dup d/blk <
   while
@@ -645,7 +646,8 @@ wordlist constant {edlin}
   namebuf peekd dir-find dup >r 0< ENFIL error
   ballocs dup link-blank peekd r> dirent-blk@ fat-append save ;
 
-\ TODO: Implement
+\ TODO: Implement this, and a version to remove the beginning
+\ of a file.
 \ : ftruncate 
 \   narg integer?
 \   namebuf peekd dir-find dup >r 0< ENFIL error
