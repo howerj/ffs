@@ -5,9 +5,6 @@
 \ * Repo: <https://github.com/howerj/ffs>
 \ * Email: <mailto:howe.r.j.89@gmail.com>
 \
-\
-\ This project is a work in progress.
-\
 \ ## TO DO
 \ 
 \ * Rewrite `list` so we have more control over output?
@@ -17,15 +14,11 @@
 \ * Documentation including file system limitations
 \ The first block contains executable code and is executed in
 \ an attempt to mount the file system.
-\ * Hide internal words in a wordlist
 \ * Optional case insensitivity in file names
 \ * https://stackoverflow.com/questions/4586972/ Fragmentation
 \ calculation
-\ * More sanity checking could be done, for example we should
-\ never be calling `bfree` on a SPECIAL block. There are many
-\ places where this checking *could* and *should* be done.
 \ * Full path parsing (e.g a/b/c) for all commands.
-\ * Zero length files
+\ * Zero length files, store `blk.end` in block dirent
 \ * Refactor system, factor words
 \ * Find orphaned nodes, data-structure checking, checksums?
 \ * Secure erase
@@ -106,8 +99,10 @@ defined spaces 0= [if]
 : spaces begin ?dup 0> while bl emit 1- repeat ;
 [then]
 
-wordlist constant {ffs}
-{ffs} +order definitions
+wordlist constant {dos}
+
+: dos only {dos} +order ;
+wordlist constant {ffs} {ffs} +order definitions
 
 defined b/buf 0= [if] 1024 constant b/buf [then]
 defined d>s 0= [if] : d>s drop ; [then]
@@ -119,7 +114,7 @@ dup 1+ swap constant EFILE ( file not found )
 dup 1+ swap constant EFULL ( disk full )
 dup 1+ swap constant EFSCK ( corrupt datastructure / disk )
 dup 1+ swap constant EEXIS ( already exists )
-dup 1+ swap constant EPATH ( path too long )
+dup 1+ swap constant EDDPT ( directory depth exceeded )
 dup 1+ swap constant EFLEN ( file length )
 dup 1+ swap constant EDFUL ( directory full )
 dup 1+ swap constant EDNEM ( directory not empty )
@@ -136,7 +131,7 @@ drop
   dup EFULL = if drop s" disk full" exit then
   dup EFSCK = if drop s" corrupt disk" exit then
   dup EEXIS = if drop s" already exists" exit then
-  dup EPATH = if drop s" path too long" exit then
+  dup EDDPT = if drop s" directory depth exceeded" exit then
   dup EFLEN = if drop s" file length" exit then
   dup EDFUL = if drop s" directory full" exit then
   dup EDNEM = if drop s" directory not empty" exit then
@@ -168,27 +163,27 @@ variable read-only 0 read-only !
 variable version  $0100 version ! \ Version
 
 defined eforth [if]
-variable start    65 start !      \ Starting block
-variable end      126 end !       \ End block
+variable start 65 start !      \ Starting block
+variable end   126 end !       \ End block
 [else]
-variable start    1 start !       \ Starting block
-variable end      128 end !       \ End block
+variable start 1 start !       \ Starting block
+variable end   128 end !       \ End block
 [then]
-2 constant dsl                    \ Directory Start Line
-0 constant init                   \ Initial program block
-1 constant fat                    \ FAT Block
-2 constant dirstart               \ Top level directory
-16 constant l/blk                 \ Lines per block
-64 constant c/blk                 \ Columns per block
-32 constant d/blk                 \ Directories per block
-32 constant dirsz
-variable loaded   0 loaded !      \ Loaded initial program?
-variable eline 0 eline !
+2 constant dsl                 \ Directory Start Line
+0 constant init                \ Initial program block
+1 constant fat                 \ FAT Block
+2 constant dirstart            \ Top level directory
+16 constant l/blk              \ Lines per block
+64 constant c/blk              \ Columns per block
+32 constant d/blk              \ Directories per block
+32 constant dirsz              \ Length of directory entry
+variable loaded   0 loaded !   \ Loaded initial program?
+variable eline 0 eline !       \ Empty link in directory
 variable exit-shell 0 exit-shell !
 
-variable file-blk \ pointer to block for a single file
-variable file-ptr \ pointer within block
-
+defined eforth [if]
+: numberify number? ;
+[else]
 : numberify ( a u -- d -1 | a u 0 : easier than >number )
   -1 dpl !
   base @ >r
@@ -204,6 +199,7 @@ variable file-ptr \ pointer within block
     1- dpl ! 1+ dpl @
   repeat
   2drop r> if dnegate then r> base ! -1 ;
+[then]
 : nul? count nip 0= ; ( a -- f : is counted word empty? )
 : token bl word dup nul? EARGU error ; ( -- b )
 : grab ( <word> -- a : get word from input stream  )
@@ -295,6 +291,16 @@ variable file-ptr \ pointer within block
   dup blk.end = until save ; 
 : bcount ( blk -- n )
   0 swap begin swap 1+ swap link dup blk.end = until drop ;
+: btruncate ( n blk -- )
+  -1 throw \ TODO Get this working
+  dup >r bcount 1 over 1+ within 0= if drop exit then
+  r> swap
+  begin
+    ?dup
+  while
+    swap link swap
+    1-
+  repeat dup bfree blk.end swap reserve ;
 : reserve-range ( blk n -- : force allocate contiguous blocks )
   begin
     ?dup
@@ -311,17 +317,19 @@ variable file-ptr \ pointer within block
       count 0 <# bl hold # # #> type
     next cr
   next r> base ! drop ;
-: link-load ( file -- )
-  begin dup >r block? load r> link dup blk.end = until drop ; 
-: link-list ( file -- )
-  begin dup block? list link dup blk.end = until drop ; 
-: link-blank ( file -- )
-  begin dup bblk link dup blk.end = until drop ;
-: link-xdump ( file -- )
-  begin dup xdump link dup blk.end = until drop ; 
+: apply ( file xt -- : apply execution token to file )
+  >r begin dup r@ swap >r execute r> link dup blk.end = until 
+  rdrop drop ;
+: +list block? list ;
+: +load block? load ;
+: link-load [ ' +load ] literal apply ; ( file -- )
+: link-list [ ' +list ] literal apply ; ( file -- )
+: link-blank [ ' bblk ] literal apply ; ( file -- )
+: link-xdump [ ' xdump ] literal apply ; ( file -- )
+: link-u [ ' u. ] literal apply ; ( file -- )
 : more? key [ 32 invert ] literal and [char] Q = ;
 : more> cr ." --- (q)uit? --- " ;
-: moar block? list more> more? ;
+: moar +list more> more? ;
 : link-more ( file -- ) 
   begin 
     dup moar if drop exit then link dup blk.end = 
@@ -356,7 +364,8 @@ variable file-ptr \ pointer within block
   repeat rdrop 2drop 0 0 ;
 : cballoc ( n -- blk f : allocate contiguous slab )
   dup contiguous if tuck swap reserve-range -1 exit then 0 ;
-: dirp? dirp @ 0 maxdir within 0= if 0 dirp ! -2 throw then ;
+: dirp? ( -- )
+  dirp @ 0 maxdir within 0= if 0 dirp ! 1 EDDPT error then ;
 : (dir) dirp? dirstk dirp @ cells + ;
 : pushd (dir) ! 1 dirp +! ; ( dir -- )
 : popd dirp @ if -1 dirp +! then (dir) @  ; ( -- dir )
@@ -371,7 +380,8 @@ variable file-ptr \ pointer within block
    ." END BLK:   " end @ u. cr
    ." MAX DIRS:  " maxdir u. cr
    ." MAX:       " end @ start @ - dup . ." / " b/buf * u. cr
-   ." FREE:      " blk.free btally dup . ." / " b/buf * u. cr ;
+   ." FREE:      " blk.free btally dup . ." / " b/buf * u. cr 
+   ." BAD BLKS:  " blk.bad-blk btally u. cr ;
 
 : .hex base @ >r hex 0 <# # # # # #> type r> base ! ;
 : (.fat)
@@ -400,6 +410,7 @@ variable file-ptr \ pointer within block
 : index >la swap addr? + ;
 : dirent-type! index dup >r c! bl r> 1+ c! save ;
 : dirent-type@ index c@ ;
+\ TODO Name check on `dirent-name!`
 : dirent-name! index 2 + swap cmove save ;
 : dirent-name@ index 2 + maxname ; 
 : dirent-blk@ ( blk line -- n )
@@ -480,7 +491,25 @@ variable file-ptr \ pointer within block
 : dir? dirent-type@ [char] D = ; ( dir line -- f )
 : special? dirent-type@ [char] S = ; ( dir line -- f)
 : file? dirent-type@ [char] F = ; ( dir line -- f)
-: (rm) ( f -- )
+
+\ TODO: Get working
+\ : (remove) ( dir line f -- )
+\   >r 2dup dir? if
+\     r@ 0= ENFIL error
+\     2dup dirent-blk@ is-empty? EDNEM error
+\   then
+\   rdrop
+\   2dup special? 0= if 2dup dirent-blk@ bfree then
+\   2dup dirent-erase
+\   >r addr? r@
+\   dirsz * + dup dirsz + swap b/buf r@ 1+ dirsz * 
+\   - cmove
+\   rdrop save drop ;
+\ : (rm) ( f --, call narg before )
+\  >r namebuf peekd dir-find dup 0< EFILE error
+\  peekd swap r> (remove) ;
+
+: (rm) ( f --, call narg before )
   namebuf peekd dir-find dup >r 0< EFILE error
   peekd r@ dir? if
     0= ENFIL error
@@ -533,7 +562,10 @@ wordlist constant {edlin}
 : + line @ a  1 line +! line @ l/blk >= if 0 line ! n then ;
 {edlin} -order {ffs} +order definitions
 
-
+: .type ( blk line -- )
+    2dup dir?     if ." DIR   " then
+    2dup file?    if ." FILE  " then 
+         special? if ." SPEC  " then ;
 : .dir ( blk -- )
   cr
   ( ." /" dup 0 dirent-name@ type cr )
@@ -542,9 +574,7 @@ wordlist constant {edlin}
     dup d/blk <
   while
     2dup dirent-type@ bl <= if 2drop exit then
-    2dup dir?     if ." DIR   " then
-    2dup file?    if ." FILE  " then 
-    2dup special? if ." SPEC  " then
+    2dup .type
     2dup dirent-name@ type space
     2 spaces
     2dup special? if
@@ -557,24 +587,33 @@ wordlist constant {edlin}
   repeat 2drop ;
 
 : narg token count ncopy ; ( "token" -- )
+: (entry) ( dir, "file" -- blk line )
+  >r narg
+  namebuf r@ dir-find dup 0< EFILE error r> swap ;
 : (file) ( "file" -- blk )
-  narg
-  namebuf peekd dir-find dup 0< EFILE error
-  peekd over dirent-type@ [char] D = ENFIL error
-  peekd swap dirent-blk@ ;
-
+  peekd (entry)
+  2dup dirent-type@ [char] D = ENFIL error
+  dirent-blk@ ;
 : found? peekd eline? ; ( -- cwd line )
-: cmd> cr ." CMD> " ;
-: (shell) \ TODO: Implement
-  grab count 2dup ncopy
-  2dup peekd dir-find dup >r 0< if
-    rdrop evaluate
-  else
-    2drop ." FILE EXISTS"
-    rdrop
-  then
-  \ TODO: Find file, execute? Path var? Execute command
-;
+
+\ : cmd> cr ." CMD> " ;
+\ : (shell) \ TODO: Implement
+\  grab count 2dup ncopy
+\  2dup peekd dir-find dup >r 0< if
+\    rdrop evaluate
+\  else
+\    2drop ." FILE EXISTS"
+\    rdrop
+\  then
+\  \ TODO: Find file, execute? Path var? Execute command
+\ ;
+
+: (mkfile) ( n -- : `narg` should have name in it )
+  >r
+  namebuf peekd dir-find 0>= EEXIS error
+  namebuf found? dirent-name!
+  r> ballocs dup link-blank found? dirent-blk!
+  [char] F found? dirent-type! ;
 
 : full? ( -- is cwd full? )
   peekd empty? dup eline ! -1 = EDFUL error ;
@@ -582,18 +621,18 @@ wordlist constant {edlin}
 \ : exists? namebuf peekd dir-find dup 0>= EEXIS error ;
 \ : nfile? 
 
-\ wordlist constant {shell}
 \ TODO: Use this
-\ {shell} +order definitions
+\ {dos} +order definitions
 
 : fsync save-buffers ;
-: halt save 1 exit-shell !  ;
+: halt save 1 exit-shell ! ( only forth )  ;
 : ls peekd .dir ; 
 : dir peekd block? list ;
 
 : mount init block? load 0 dirp ! dirstart pushd ;
 : fdisk bcheck fmt.init fmt.fat fmt.blks fmt.root mount ; 
 \ TODO: `move`, allow moving into subdirectories or parent dirs
+\ TODO: Name check on making files (no ".", "..", or "/")
 : rename ( "file" "file" -- )
   narg
   namebuf peekd dir-find dup >r 0< EFILE error
@@ -601,13 +640,19 @@ wordlist constant {edlin}
   namebuf peekd dir-find 0>= EEXIS error
   findbuf peekd r> dirent-name! ;
 \ : move ( "file" "file" -- )
-\  narg
-\  namebuf peekd dir-find dup >r 0< EFILE error
-\  narg peekd dir-find
-\  \ TODO: Is directory?
-\ ;
+\  \ TODO Check for ".." and "."
+\   narg
+\   namebuf peekd dir-find dup >r 0< EFILE error
+\   narg peekd dir-find dup >r 0< if \ move?
+\     peekd r@ dirent-type@ [char] D <> ENDIR error
+\     peekd r@ dirent-blk@
+\     
+\   else ( rename )
+\     findbuf peekd r> dirent-name!
+\   then
+\  ;
 : mkdir ( "dir" -- )
-\ TODO: Check dirstack level and prevent creation
+  dirp @ maxdir >= EDDPT error
   full?
   narg
   namebuf peekd dir-find 0>= EEXIS error
@@ -626,41 +671,16 @@ wordlist constant {edlin}
   r> found? dirent-blk!
   [char] F found?  dirent-type!
   namebuf found? dirent-name! ;
-: mkfile ( "file" -- )
-  full?
-  narg
-  namebuf peekd dir-find 0>= EEXIS error
-  namebuf found? dirent-name!
-  balloc dup bblk found? dirent-blk!
-  [char] F found? dirent-type! ;
-: fallocate ( "file" count -- )
-  full?
-  narg
-  integer? >r
-  namebuf peekd dir-find 0>= EEXIS error
-  namebuf found? dirent-name!
-  r> ballocs dup link-blank found? dirent-blk!
-  [char] F found? dirent-type! ;
+: mkfile full? narg 1 (mkfile) ; ( "file" -- )
+: fallocate full? narg integer? (mkfile) ; ( "file" count -- )
 : fgrow ( "file" count -- )
   narg integer? 
   namebuf peekd dir-find dup >r 0< ENFIL error
   ballocs dup link-blank peekd r> dirent-blk@ fat-append save ;
-
-\ TODO: Implement this, and a version to remove the beginning
-\ of a file.
-\ : ftruncate 
-\   narg integer?
-\   namebuf peekd dir-find dup >r 0< ENFIL error
-\   peek r> dirent-blk@
-\   dup bcount 
-\ 
-\   begin
-\ 
-\   while
-\ 
-\   repeat
-\ ;
-\ 
+: ftruncate ( "file" count -- )
+  narg integer?
+  namebuf peekd dir-find dup >r 0< ENFIL error
+  peekd r> dirent-blk@ btruncate ;
 : mknod ( "file" node -- )
   full?
   narg
@@ -700,50 +720,67 @@ wordlist constant {edlin}
     then
     1+
   repeat drop ; 
-
-\ TODO: implement
+\ : (rm) ( f -- )
+\   namebuf peekd dir-find dup >r 0< EFILE error
+\   peekd r@ dir? if
+\     0= ENFIL error
+\     peekd r@ dirent-blk@ is-empty? EDNEM error
+\   then
+\   peekd r@ special? 0= if peekd r@ dirent-blk@ bfree then
+\   peekd r@ dirent-erase
+\   peekd addr? r@ dirsz * + dup dirsz + swap b/buf r@ 1+ dirsz * 
+\   - cmove
+\   save rdrop drop ;
+\ 
 \ : (deltree)
-\   dsl
-\   begin
-\     dup d/blk <
-\   while
-\     peekd over dirent-type@ bl <= if drop exit then
-\     peekd over dirent-type@ [char] D = if
-\       peekd over dirent-blk@ pushd recurse popd \ delete
-\     else
-\       \ todo delete file
-\     then
-\     1+
-\   repeat drop ; 
-\ : deltree narg ;
-: shell \ get line / error handling / execute
-( only {shell} +order )
-  begin
-    cmd>
-    [ ' (shell) ] literal catch elucidate exit-shell @ 
-  until 0 exit-shell ! ; 
-
-: stat ;
-: defrag ; \ compact disk
-: chkdsk ;
-: grep ; ( search file -- )
-: cmp ;
-: help ;
-
+\    dsl
+\    begin
+\      dup d/blk <
+\    while
+\      peekd over dirent-type@ bl <= if drop exit then
+\      peekd over dirent-type@ [char] D = if
+\        peekd over dirent-blk@ pushd recurse popd \ delete
+\      else
+\        
+\        \ todo delete file
+\      then
+\      1+
+\    repeat drop ; 
+\ : deltree 
+\   narg 
+\ ;
+\ : shell \ get line / error handling / execute
+\ ( only {shell} +order )
+\  begin
+\    cmd>
+\    [ ' (shell) ] literal catch elucidate exit-shell @ 
+\  until 0 exit-shell ! ; 
+: help ( -- )
+  cr
+  cr ." Use `more help.txt` in the root directory for help." 
+  cr ." Type `cd /` to get to the root directory and `ls`
+  cr ." to view files."
+  cr cr ." Otherwise visit <https://github.com/howerj/ffs>"
+  cr cr ." Command List: " cr words cr cr ;
 : cat (file) link-list ; ( "file" -- )
 : more (file) link-more ; ( "file" -- )
 : exe (file) link-load  ; ( "file" -- )
 : hexdump (file) link-xdump ; ( "file" -- )
+: stat 
+  peekd (entry) 
+  cr 2dup .type 
+  cr dirent-blk@ dup bcount ." BCNT: " u. 
+  cr ." BLKS: " link-u ;
 
+: defrag ; \ compact disk
+: chkdsk ;
+: grep ; ( search file -- )
+: cmp ;
 
 {edlin} +order
 \ TODO: Create file if it does not exist
-\ TODO: Prevent extension of special files
-\ TODO: Add command that auto increments line number and
-\       allocates block if needed.
 : edit (file) dup edlin ; ( "file" -- )
 {edlin} -order
-
 
 \ Aliases
 : cls page ;
@@ -751,7 +788,7 @@ wordlist constant {edlin}
 : touch mkfile ;
 : chdir cd ;
 : del rm ;
-: sh shell ;
+: sh exe ;
 : ed edit ;
 : bye halt ;
 : exit halt ;
@@ -769,8 +806,11 @@ defined eforth [if]
 mount loaded @ 0= [if]
 cr .( FFS NOT PRESENT, FORMATTING... ) cr
 fdisk
+\ mkdir dev
+\ cd dev
 mknod [BOOT] 0
 mknod [FAT] 1
+cd ..
 touch help.txt
 edit help.txt
 + FORTH FILE SYSTEM HELP AND COMMANDS
