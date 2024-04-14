@@ -262,10 +262,14 @@ create dirstk maxdir cells allot dirstk maxdir cells erase
 namebuf: namebuf
 namebuf: findbuf
 namebuf: compbuf
+namebuf: movebuf
 create copy-store 1024 allot
+32 constant dirsz              \ Length of directory entry
+create dirent-store dirsz allot
 variable dirp 0 dirp ! \ Directory Pointer
 variable read-only 0 read-only !  \ Make file system read only 
-variable version  $0100 version ! \ Version
+$0100 constant version \ File System version
+
 
 defined eforth [if]
 variable start 65 start !      \ Starting block
@@ -281,10 +285,10 @@ variable end   128 end !       \ End block
 16 constant l/blk              \ Lines per block
 64 constant c/blk              \ Columns per block
 32 constant d/blk              \ Directories per block
-32 constant dirsz              \ Length of directory entry
 variable loaded   0 loaded !   \ Loaded initial program?
 variable eline 0 eline !       \ Empty link in directory
-variable exit-shell 0 exit-shell !
+variable exit-shell 0 exit-shell ! \ Used to exit FS shell
+variable tmove                 \ Use for `move` command
 
 defined eforth [if] : numberify number? ; [else]
 : numberify ( a u -- d -1 | a u 0 : easier than >number )
@@ -391,19 +395,14 @@ defined eforth [if] : numberify number? ; [else]
 : bfree ( blk -- : free a linked list ) 
   begin
   dup link swap blk.free swap bvalid? reserve
-  dup blk.end = until save ; 
+  dup blk.end = until drop save ; 
 : bcount ( blk -- n )
   0 swap begin swap 1+ swap link dup blk.end = until drop ;
 : btruncate ( n blk -- )
-  -1 throw \ TODO Get this working
-  dup >r bcount 1 over 1+ within 0= if drop exit then
-  r> swap
-  begin
-    ?dup
-  while
-    swap link swap
-    1-
-  repeat dup bfree blk.end swap reserve ;
+  >r dup 1 r@ bcount within 0= if rdrop drop exit then
+  r@ swap r> swap
+  1- for nip dup link
+  next bfree blk.end swap reserve save ;
 : reserve-range ( blk n -- : force allocate contiguous blocks )
   begin
     ?dup
@@ -481,6 +480,8 @@ defined eforth [if] : numberify number? ; [else]
 : fcopy fclear nlen? findbuf drop swap cmove ; ( c-addr u )
 : cclear compbuf blank ; ( -- )
 : ccopy cclear nlen? compbuf drop swap cmove ; ( c-addr u )
+: mclear movebuf blank ; ( -- )
+: mcopy mclear nlen? movebuf drop swap cmove ; ( c-addr u )
 : .hex base @ >r hex 0 <# # # # # #> type r> base ! ;
 : hexp base @ >r hex 0 <# # # # # [char] $ hold #> r> base ! ;
 : cvalid ( ch -- f : is character valid for a dir name? )
@@ -527,6 +528,8 @@ defined eforth [if] : numberify number? ; [else]
   >la swap addr? + dirsz blank modify ; 
 : >copy addr? copy-store b/buf cmove ;
 : copy> addr? copy-store swap b/buf cmove ;
+: >dir >la swap addr? + dirent-store dirsz cmove ; 
+: dir> >la swap addr? + dirent-store swap dirsz cmove ;
 
 : fmtdir ( c-addr u dir -- )
   dup bblk
@@ -621,12 +624,14 @@ defined eforth [if] : numberify number? ; [else]
   peekd r@ dir? if
     0= ENFIL error
     peekd r@ dirent-blk@ is-empty? EDNEM error
+  else
+    0<> ENDIR error
   then
   peekd r@ special? 0= if peekd r@ dirent-blk@ bfree then
   peekd r@ dirent-erase
   peekd addr? r@ dirsz * + dup dirsz + swap b/buf r@ 1+ dirsz * 
   - cmove
-  save rdrop drop ;
+  save rdrop ;
 
 : (copy) ( src-blks dst-blks )
   swap
@@ -715,8 +720,8 @@ wordlist constant {edlin}
 \  \ TODO: Find file, execute? Path var? Execute command
 \ ;
 
-: full? ( -- is cwd full? )
-  peekd empty? dup eline ! -1 = EDFUL error ;
+: dfull? empty? dup eline ! -1 = EDFUL error ; ( blk -- )
+: full? peekd dfull? ; ( -- : is cwd full? )
 : (create) ( -- blk: call narg prior, create or open existing )
   namebuf peekd dir-find dup 
   0>= if peekd swap dirent-blk@ exit then
@@ -753,25 +758,36 @@ wordlist constant {edlin}
 : dir peekd block? list ;
 : mount init block? load 0 dirp ! dirstart pushd ;
 : fdisk bcheck fmt.init fmt.fat fmt.blks fmt.root mount ; 
-\ TODO: `move`, allow moving into subdirectories or parent dirs
 : rename ( "file" "file" -- )
   narg
   namebuf peekd dir-find dup >r 0< EFILE error
   narg ( dir-find uses `findbuf` )
   namebuf peekd dir-find 0>= EEXIS error
   findbuf peekd r> dirent-name! ;
-\ : move ( "file" "file" -- )
-\  \ TODO Check for ".." and "."
-\   narg
-\   namebuf peekd dir-find dup >r 0< EFILE error
-\   narg peekd dir-find dup >r 0< if \ move?
-\     peekd r@ dirent-type@ [char] D <> ENDIR error
-\     peekd r@ dirent-blk@
-\     
-\   else ( rename )
-\     findbuf peekd r> dirent-name!
-\   then
-\  ;
+\ TODO: Optimize, remove `tmove`, is movebuf needed?
+: move ( "file" "file" -- )
+  narg namebuf mcopy 
+  movebuf peekd dir-find dup tmove ! dup 0<= EFILE error
+  peekd swap >dir
+  token count 2dup ncopy
+  movebuf namebuf compare 0= if 2drop exit then
+  2dup s" ." compare 0= if 2drop exit then
+  s" .." compare 0= if 
+    popd peekd >r pushd
+  else
+    namebuf peekd dir-find dup 0>= if
+      dup peekd swap dir? if
+        peekd swap dirent-blk@ >r
+      else 1 ENDIR error then
+    else \ rename
+      drop movebuf peekd dir-find 
+      >r namebuf peekd r> dirent-name! exit
+    then
+  then
+  r@ dfull?
+  movebuf r@ dir-find 0>= EEXIS error
+  r> eline? dir>
+  peekd tmove @ dirent-erase ;
 : mkdir ( "dir" -- )
   dirp @ maxdir >= EDDPT error
   full?
@@ -781,6 +797,7 @@ wordlist constant {edlin}
   balloc dup >r found? dirent-blk!
   [char] D found? dirent-type!
   namebuf r> fmtdir ; 
+\ TODO: Copy to "..", directory, and "."
 : copy ( "src" "dst" -- )
   full?
   narg
@@ -827,8 +844,7 @@ wordlist constant {edlin}
     dup cells dirstk + @ 0 dirent-name@ 
     over >r namelen r> swap type ." /"
     1+
-  repeat
-  drop ;
+  repeat drop ;
 : tree ( -- : tree view of file system, could be improved )
   cr pwd ls
   dsl
@@ -859,7 +875,7 @@ wordlist constant {edlin}
 \      dup d/blk <
 \    while
 \      peekd over dirent-type@ bl <= if drop exit then
-\      peekd over dirent-type@ [char] D = if
+\      peekd over dir? if
 \        peekd over dirent-blk@ pushd recurse popd \ delete
 \      else
 \        
@@ -903,16 +919,17 @@ wordlist constant {edlin}
 {edlin} -order
 
 \ Aliases
+: bye halt ;
+: chdir cd ;
 : cls page ;
 : cp copy ;
-: touch mkfile ;
-: chdir cd ;
 : del rm ;
-: sh exe ;
 : ed edit ;
-: bye halt ;
 : exit halt ;
+: mv move ;
 : quit halt ;
+: sh exe ;
+: touch mkfile ;
 : type cat ;
 
 defined eforth [if]
@@ -957,6 +974,7 @@ edit help.txt
 + fdisk: **WARNING** formats disk deleting all data!
 + fgrow <FILE> <NUM>: grow <FILE> by <NUM> blocks
 + fsync: save any block changes
++ ftruncate <FILE> <NUM>: truncate <FILE> to <NUM> blocks
 + halt / quit / bye: safely halt system
 + hexdump <FILE>: hexdump a file
 + ls / dir : list directory
@@ -964,6 +982,7 @@ edit help.txt
 + mknode <FILE> <NUM>: make a special <FILE> with <NUM>
 + more <FILE>: display a file, pause for each block
 + mount: attempt file system mounting
++ move <FILE> <FILE/DIR>: move into directory or rename file
 + pwd: print current working directory
 + rename <DIR/FILE1> <DIR/FILE2>: rename a file or directory
 + rm / del <FILE>: remove a <FILE> and not a <DIR>
