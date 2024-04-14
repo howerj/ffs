@@ -32,6 +32,28 @@
 \
 \ ## Format
 \
+\ The disk format consists of a series of 1024 byte, aligned,
+\ Forth Blocks. The format is optimized to work with Forth
+\ blocks and it is expected that a Forth interpreter is
+\ available to execute files if needed.
+\
+\ A file system consists of a maximum of 512 blocks, which is
+\ the maximum number of 16-byte entries that can fit in a
+\ single block. This limits the maximum file system size of
+\ 512KiB. In the future this restriction may be lifted and
+\ multiple blocks used to store the FAT, which would raise
+\ the limit to approximated 64MIB.
+\
+\ The FAT is stored as a binary file. Directories are fixed
+\ format text files. Files consist of potentially non
+\ contiguous Forth Blocks, and thus files must be multiples
+\ of 1024 bytes (a limitation that might be removed in the
+\ future).
+\
+\ The file system is designed to be forwards compatible to
+\ a degree with various potential changes, or at least offer
+\ a possible avenue for an upgrade.
+\
 \ ### FAT - File Allocation Table
 \
 \ The FAT, or File Allocation Table, is a data-structure at
@@ -49,19 +71,64 @@
 \ that block holds the FAT itself, the initial directory or
 \ the boot block).
 \
+\ The block entry stored in the FAT table does not necessarily
+\ directly correspond to the actual block number as stored on
+\ disk. An offset is applied which is useful when the Forth
+\ implementation is mapped on to some of the blocks or certain
+\ blocks have special meaning (usually the 0 block) and cannot
+\ be used.
+\
 \ ### Text Directory Format
 \
 \ The directory format is incredibly simple, it consists of
 \ fixed width text fields that are human and machine readable.
-\ A directory fits into a single block, which puts an upper
-\ limit on a directory size (without extensions that look up
-\ the next entry in the FAT table).
 \
-\        \ DIRNAME   BLK
-\        F FILE.FTH  BLK
-\        F FILE.TXT  BLK
-\        D DIRECTORY BLK
-\        S FILE.SPC  BLK
+\        \ DIRNAME         BLK
+\        F FILE.FTH        BLK
+\        F FILE.TXT        BLK
+\        D DIRECTORY       BLK
+\        S FILE.SPC        BLK
+\
+\ The fields are:
+\
+\ * Directory entry type, which is two bytes in size.
+\ * A file name which is 16 bytes in size.
+\ * A block field which is 5 bytes in size.
+\
+\ The directories must be stored in a compact fashion with no
+\ gaps, this matters when entries are removed from the 
+\ directory.
+\
+\ The first entry in a directory contains a special 64-byte
+\ field. It has the directory entry type of "\". It contains
+\ a copy of the directories name which is used when printing
+\ out the present working directory with `pwd`.
+\
+\ All other directory entries are 32-bytes in size, 23 bytes
+\ are currently used. Non used bytes must be set to the
+\ space ASCII character.
+\
+\ File and directory names are 16-bytes in length always, even 
+\ when the directory entry is a file name like "ABC.TXT", when 
+\ stored as a directory entry the file is padded with trailing 
+\ spaces up to the 16 byte limit.
+\
+\ The "BLK" fields are formatted as 16-bit unsigned hexadecimal 
+\ numbers with a "$" prefix. They are the initial entries in a
+\ FAT table, which may point to a FAT linked list, a special
+\ block, or a sentinel value in the case that the file is a
+\ single block in size.
+\
+\ There is no concept of empty file, all file entries must have
+\ an associated block. This may change in the future.
+\
+\ Directories consist of a single block, which limits their
+\ size. This may change in the future.
+\
+\ Thirty directory entries can fit in a single directory, which
+\ is not shown above as each entry being 32 bytes two entries
+\ fill and entire line which would push the line length over
+\ 64 in this document.
 \
 \ ### File Format
 \
@@ -84,8 +151,26 @@
 \
 \ ### Commands
 \
+\ The commands are implemented as a series of Forth words that
+\ use parsing words to take their arguments from the input
+\ stream if they have any, that is they do not expect their
+\ arguments to be present on the stack.
+\
+\ There is a help and list of commands that is compiled into
+\ the example image that is created at the end of this file,
+\ along with an example executable program.
+\
+\ Commands take their names from Unix and MS-DOS, for example
+\ both "ls" and "dir" are present (although they behave
+\ slightly differently).
+\
 \ ### Block Editor
 \
+\ A block editor is included that works on files stored in a
+\ non-contiguous fashion. It can also grow files. The editor
+\ commands consist of single or double letter commands, it
+\ is described later on, in a help file that is created on
+\ disk.
 \
 
 defined (order) 0= [if]
@@ -557,14 +642,13 @@ variable head 1 head !
 variable line 0 line !
 wordlist constant {edlin}
 : edlin ( BLOCK editor )
-  vista ! head ! 0 line ! [ {edlin} ] literal +order ; 
+  vista ! head ! 0 line ! ( only ) [ {edlin} ] literal +order ; 
 {edlin} +order definitions
-\ TODO: Command to delete block from linked list
 : s save ; ( -- : save edited block )
-: q s [ {edlin} ] literal -order ; ( -- : quit editor )
+: q s [ {edlin} ] literal -order ( dos ) ; ( -- : quit editor )
 : ? vista @ . ;    ( -- : print block number of current block )
 : l vista @ block? list ; ( -- : list current block )
-: x q head @ link-load edlin ; ( -- : exe file )
+: x q head @ link-load head @ vista @ edlin ; ( -- : exe file )
 : ia 2 ?depth [ $6 ] literal lshift + vista @ addr? + tib
   >in @ + swap source nip >in @ - cmove tib @ >in ! l ;
 : a 0 swap ia ; : i a ; ( line --, "line" : insert line at )

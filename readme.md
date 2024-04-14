@@ -5,12 +5,24 @@
 * License: The Unlicense / Public Domain
 * Repo: <https://github.com/howerj/ffs>
 
-**This project is a work in progress**.
+This is a simple Forth block based file system. See the Forth
+file [ffs.fth][] for more information including documentation. 
 
-This is the N-th attempt a simple Forth block based file system. See the Forth
-file [ffs.fth][] for more information, including a to-do list and any
-documentation. This project is very much a work in progress, it works under
-<https://gforth.org/> and also SUBLEQ eForth (see <https://github.com/howerj/subleq>).
+This project works under <https://gforth.org/> and also 
+SUBLEQ eForth (see <https://github.com/howerj/subleq>).
+
+Some quick notes and limitations:
+
+* Files consist of *non-contiguous* Forth Blocks.
+* The maximum file system size is 512KiB.
+* The maximum number of files per directory is 30.
+* The file system is reliant on the Forth Block word-set and 
+should run on even the most spartan Forth system so long as it 
+is present.
+* File names are limited to 16 bytes in size.
+* Some commands include; edit, exe, ls, rm, rmdir, mkdir, cd,
+pwd, tree, cp, rename, cat, hexdump, more, df, halt, fdisk,
+stat.
 
 ## References
 
