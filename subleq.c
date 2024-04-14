@@ -1,3 +1,4 @@
+/* SUBLEQ VM, RICHARD JAMES HOWE */
 #include <stdint.h>
 #include <stdio.h>
 
@@ -35,6 +36,8 @@ int main(int argc, char **argv) {
 			max = MAX(max, b);
 		}
 	}
+	while (!m[max])
+		max--;
 	if (argc > 2) {
 		FILE *f = fopen(argv[argc - 1], "wb");
 		if (!f)

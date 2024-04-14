@@ -26,7 +26,9 @@
 \ * For SUBLEQ eFORTH we could mark the first 64 blocks as 
 \ being special, as well as the last block, and not use
 \ offsets. This would allow the file system direct access to
-\ the SUBLEQ code, including tasks.
+\ the SUBLEQ code, including tasks. This could even be present
+\ in the file system as a special file, with a linked entry in
+\ the FAT.
 \
 \ ## Format
 \
@@ -63,7 +65,22 @@
 \
 \ ### File Format
 \
+\ A file consists of a entry in a directory and a linked list
+\ of blocks in the FAT. All files in this version of the file
+\ system must be multiples of 1024 bytes in size. Files do not
+\ not have to consist of a contiguous set of blocks, which 
+\ marks the major advantage of this file system over 
+\ traditional ways of managing Forth blocks.
+\
+\ Special files are marked with an "S" instead of an "F", many
+\ but not all utilities will work with these files, and editing
+\ these special files may cause instability.
+\
 \ ### Special Blocks
+\
+\ There are at least three special blocks, a boot block, a
+\ FAT table, and the root directory. They are the first three
+\ blocks in the file system.
 \
 \ ### Commands
 \
@@ -100,9 +117,9 @@ defined spaces 0= [if]
 [then]
 
 wordlist constant {dos}
-
 : dos only {dos} +order ;
-wordlist constant {ffs} {ffs} +order definitions
+wordlist constant {ffs} 
+{ffs} +order definitions
 
 defined b/buf 0= [if] 1024 constant b/buf [then]
 defined d>s 0= [if] : d>s drop ; [then]
@@ -122,6 +139,7 @@ dup 1+ swap constant ENFIL ( not a file )
 dup 1+ swap constant ENDIR ( not a directory )
 dup 1+ swap constant EARGU ( invalid argument )
 dup 1+ swap constant EINTN ( internal error )
+dup 1+ swap constant EINAM ( invalid name )
 drop
 
 : e>s ( code -- )
@@ -139,6 +157,7 @@ drop
   dup ENDIR = if drop s" not a directory" exit then
   dup EARGU = if drop s" invalid argument" exit then
   dup EINTN = if drop s" internal error" exit then
+  dup EINAM = if drop s" invalid name" exit then
   drop s" unknown" ;
 
 variable error-level 0 error-level !
@@ -146,20 +165,21 @@ variable error-level 0 error-level !
 : error swap if dup elucidate throw then drop ; ( f code -- )
 
 $0000 constant blk.end      \ End of FAT chain
-$FFFC constant blk.unused   \ Unmapped / Not memory
+$FFFC constant blk.unmapped \ Unmapped / Not memory
 $FFFD constant blk.bad-blk  \ Block is bad
 $FFFE constant blk.special  \ Special blocks
 $FFFF constant blk.free     \ Block is free to use
-16 constant maxname
-8 constant maxdir
+16 constant maxname         \ Maximum directory entry length
+ 8 constant maxdir          \ Maximum directory depth
 create dirstk maxdir cells allot dirstk maxdir cells erase
 
 : namebuf: create here maxname dup allot blank does> maxname ;
 namebuf: namebuf
 namebuf: findbuf
+namebuf: compbuf
 create copy-store 1024 allot
 variable dirp 0 dirp ! \ Directory Pointer
-variable read-only 0 read-only !
+variable read-only 0 read-only !  \ Make file system read only 
 variable version  $0100 version ! \ Version
 
 defined eforth [if]
@@ -181,9 +201,7 @@ variable loaded   0 loaded !   \ Loaded initial program?
 variable eline 0 eline !       \ Empty link in directory
 variable exit-shell 0 exit-shell !
 
-defined eforth [if]
-: numberify number? ;
-[else]
+defined eforth [if] : numberify number? ; [else]
 : numberify ( a u -- d -1 | a u 0 : easier than >number )
   -1 dpl !
   base @ >r
@@ -229,7 +247,7 @@ defined eforth [if]
     dup blk.end =
   until drop ;
 : reserve 2* fat addr? + 16! modify ; ( blk blk -- )
-: btotal end @ start @ - ;
+: btotal end @ start @ - ; ( -- n )
 : bcheck btotal 4 < -1 and throw ;
 : fmt.init
   init addr? b/buf blank
@@ -237,7 +255,7 @@ defined eforth [if]
   init addr? swap cmove save ;
 : fmt.fat
   fat addr? b/buf erase
-  0 b/buf 2/ 1- for blk.unused over reserve 1+ next drop
+  0 b/buf 2/ 1- for blk.unmapped over reserve 1+ next drop
   blk.special init reserve
   blk.special fat reserve
   blk.special dirstart reserve
@@ -320,8 +338,8 @@ defined eforth [if]
 : apply ( file xt -- : apply execution token to file )
   >r begin dup r@ swap >r execute r> link dup blk.end = until 
   rdrop drop ;
-: +list block? list ;
-: +load block? load ;
+: +list block? list ; ( blk -- )
+: +load block? load ; ( blk -- )
 : link-load [ ' +load ] literal apply ; ( file -- )
 : link-list [ ' +list ] literal apply ; ( file -- )
 : link-blank [ ' bblk ] literal apply ; ( file -- )
@@ -332,9 +350,9 @@ defined eforth [if]
 : moar +list more> more? ;
 : link-more ( file -- ) 
   begin 
-    dup moar if drop exit then link dup blk.end = 
-  until drop ; 
-: fat-end ( blk -- blk )
+    dup moar if cr ." QUIT" drop exit then link dup blk.end = 
+  until drop cr ." EOF" ; 
+: fat-end ( blk -- blk : last block in FAT chain )
   begin dup link blk.end = if exit then link again ;
 
 \ N.B. `fat-append` does not set the appended block to
@@ -342,9 +360,6 @@ defined eforth [if]
 \ list can be appended. It could set it intelligently 
 \ however...
 : fat-append fat-end reserve save ; ( blk file -- )
-\ TODO: calculate largest block allocable, and function
-\ can we allocate block of size N? And how many blocks of
-\ size N can we allocate?
 : contiguous? ( blk n -- f : is contiguous range free? )
   begin
     ?dup
@@ -360,8 +375,12 @@ defined eforth [if]
     dup end @ <
   while
     dup r@ contiguous? if rdrop -1 exit then
-    r@ +
-  repeat rdrop 2drop 0 0 ;
+    1+ ( This could be sped up by incrementing past failure )
+  repeat rdrop drop 0 0 ;
+: largest ( -- n : largest block that we can allocate )
+  0 btotal for
+    r@ contiguous nip if r@ max then
+  next ;
 : cballoc ( n -- blk f : allocate contiguous slab )
   dup contiguous if tuck swap reserve-range -1 exit then 0 ;
 : dirp? ( -- )
@@ -370,27 +389,34 @@ defined eforth [if]
 : pushd (dir) ! 1 dirp +! ; ( dir -- )
 : popd dirp @ if -1 dirp +! then (dir) @  ; ( -- dir )
 : peekd popd dup pushd ; ( -- dir )
-
-\ TODO: Quantify fragmentation, measure largest alloc block
-: df cr
-   loaded @ 0= if ." NO DISK" cr exit then
-   ." MOUNTED" cr
-   ." BLK SZ:    " b/buf u. cr
-   ." START BLK: " start @ u. cr
-   ." END BLK:   " end @ u. cr
-   ." MAX DIRS:  " maxdir u. cr
-   ." MAX:       " end @ start @ - dup . ." / " b/buf * u. cr
-   ." FREE:      " blk.free btally dup . ." / " b/buf * u. cr 
-   ." BAD BLKS:  " blk.bad-blk btally u. cr ;
-
+: nlen? dup maxname > -1 and throw ; ( n -- n )
+: nclear namebuf blank ; ( -- )
+: ncopy nclear nlen? namebuf drop swap cmove ; ( c-addr u )
+: fclear findbuf blank ; ( -- )
+: fcopy fclear nlen? findbuf drop swap cmove ; ( c-addr u )
+: cclear compbuf blank ; ( -- )
+: ccopy cclear nlen? compbuf drop swap cmove ; ( c-addr u )
 : .hex base @ >r hex 0 <# # # # # #> type r> base ! ;
+: hexp base @ >r hex 0 <# # # # # [char] $ hold #> r> base ! ;
+: cvalid ( ch -- f : is character valid for a dir name? )
+  dup 47 = if drop 0 exit then
+  32 127 within ;
+: nvalid? ( c-addr u -- f )
+  2dup s" ." ccopy compbuf compare 0= if 2drop 0 exit then
+  2dup s" .." ccopy compbuf compare 0= if 2drop 0 exit then
+  begin
+   ?dup
+  while
+   over c@ cvalid 0= if 2drop 0 exit then
+   swap 1+ swap 1-
+  repeat drop -1 ;
 : (.fat)
   b/buf 2/ swap - 1- .hex ." :"
-  dup blk.free    = if ." FREE " drop exit then
-  dup blk.bad-blk = if ." BADB " drop exit then
-  dup blk.end     = if ." END! " drop exit then
-  dup blk.special = if ." SPEC " drop exit then
-  dup blk.unused  = if ." NUSD " drop exit then
+  dup blk.free     = if ." FREE " drop exit then
+  dup blk.bad-blk  = if ." BADB " drop exit then
+  dup blk.end      = if ." END! " drop exit then
+  dup blk.special  = if ." SPEC " drop exit then
+  dup blk.unmapped = if ." NMAP " drop exit then
   .hex space ;
 : .ffat ( -- )
   cr
@@ -400,18 +426,13 @@ defined eforth [if]
   next drop ;
 : .sfat fat addr? end @ 2 * dump ; ( -- )
 : .fat fat addr? b/buf 2/ 1- for dup 16@ . 2 + next drop ;
-: nlen? dup maxname > -1 and throw ; ( n -- n )
-: nclear namebuf blank ; ( -- )
-: ncopy nclear nlen? namebuf drop swap cmove ; ( c-addr u )
-: fclear findbuf blank ; ( -- )
-: fcopy fclear nlen? findbuf drop swap cmove ; ( c-addr u )
-: hexp base @ >r hex 0 <# # # # # [char] $ hold #> r> base ! ;
+
 : >la dup 0 d/blk 1+ within 0= -1 and throw dirsz * ;
 : index >la swap addr? + ;
 : dirent-type! index dup >r c! bl r> 1+ c! save ;
 : dirent-type@ index c@ ;
-\ TODO Name check on `dirent-name!`
-: dirent-name! index 2 + swap cmove save ;
+: dirent-name! >r >r 2dup nvalid? 0= EINAM error r> r> 
+  index 2 + swap cmove save ;
 : dirent-name@ index 2 + maxname ; 
 : dirent-blk@ ( blk line -- n )
   index maxname + 2 + 5 numberify 0= throw d>s ;
@@ -441,7 +462,7 @@ defined eforth [if]
 \ \ TODO: Get working in gforth (cannot call `exit` in
 \ \ FOR...NEXT loop in gforth... 
 \ 
-\ : >upper dup 65 91 within if 32 xor then ;
+\ : >upper dup 97 123 within if 32 xor then ;
 \ : icompare ( a1 u1 a2 u2 -- n : string comparison )
 \   rot
 \   over - ?dup if >r 2drop r> nip exit then
@@ -485,7 +506,8 @@ defined eforth [if]
   2drop -1 ;
 : is-empty? empty? dsl <> ; ( blk -- f )
 : fmt.root 
-  s"  [ROOT]" ncopy namebuf dirstart
+  ( s" [ROOT]" ncopy namebuf dirstart )
+  nclear namebuf dirstart
   fmtdir blk.end dirstart reserve save ;
 : /root dirp @ for popd drop next ;
 : dir? dirent-type@ [char] D = ; ( dir line -- f )
@@ -528,7 +550,7 @@ defined eforth [if]
     link swap link swap
     dup
     blk.end =
-  until ( <> throw ) 2drop ;
+  until <> throw ;
 
 variable vista 1 vista ! \ Used to be `scr`
 variable head 1 head !
@@ -538,7 +560,6 @@ wordlist constant {edlin}
   vista ! head ! 0 line ! [ {edlin} ] literal +order ; 
 {edlin} +order definitions
 \ TODO: Command to delete block from linked list
-\ TODO: Command to yank block, and paste block, and swap blocks
 : s save ; ( -- : save edited block )
 : q s [ {edlin} ] literal -order ; ( -- : quit editor )
 : ? vista @ . ;    ( -- : print block number of current block )
@@ -555,6 +576,8 @@ wordlist constant {edlin}
   vista @ link vista ! l ;
 : p ( -- : prev block )
   0 line ! s head @ vista @ previous vista ! l ; 
+: y vista @ >copy ;
+: u vista @ copy> save ;
 : z vista @ addr? b/buf blank l ; ( -- : erase current block )
 : d 1 ?depth >r vista @ addr? r> [ $6 ] literal lshift +
    [ $40 ] literal blank l ; ( line -- : delete line )
@@ -608,6 +631,17 @@ wordlist constant {edlin}
 \  \ TODO: Find file, execute? Path var? Execute command
 \ ;
 
+: full? ( -- is cwd full? )
+  peekd empty? dup eline ! -1 = EDFUL error ;
+: (create) ( -- blk: call narg prior, create or open existing )
+  namebuf peekd dir-find dup 
+  0>= if peekd swap dirent-blk@ exit then
+  drop
+  full?
+  namebuf found? dirent-name!
+  balloc dup link-blank found? dirent-blk!
+  [char] F found? dirent-type!
+  found? dirent-blk@ ;
 : (mkfile) ( n -- : `narg` should have name in it )
   >r
   namebuf peekd dir-find 0>= EEXIS error
@@ -615,24 +649,27 @@ wordlist constant {edlin}
   r> ballocs dup link-blank found? dirent-blk!
   [char] F found? dirent-type! ;
 
-: full? ( -- is cwd full? )
-  peekd empty? dup eline ! -1 = EDFUL error ;
+{dos} +order definitions
 
-\ : exists? namebuf peekd dir-find dup 0>= EEXIS error ;
-\ : nfile? 
-
-\ TODO: Use this
-\ {dos} +order definitions
+: df cr
+   loaded @ 0= if ." NO DISK" cr exit then
+   ." MOUNTED" cr
+   ." BLK SZ:    " b/buf u. cr
+   ." START BLK: " start @ u. cr
+   ." END BLK:   " end @ u. cr
+   ." MAX DIRS:  " maxdir u. cr
+   ." MAX:       " end @ start @ - dup . ." / " b/buf * u. cr
+   ." FREE:      " blk.free btally dup . ." / " b/buf * u. cr 
+   ." BAD BLKS:  " blk.bad-blk btally u. cr 
+   ." LARGEST CONTIGUOUS BLOCK: " largest u. cr ;
 
 : fsync save-buffers ;
-: halt save 1 exit-shell ! ( only forth )  ;
+: halt save 1 exit-shell ! only forth ;
 : ls peekd .dir ; 
 : dir peekd block? list ;
-
 : mount init block? load 0 dirp ! dirstart pushd ;
 : fdisk bcheck fmt.init fmt.fat fmt.blks fmt.root mount ; 
 \ TODO: `move`, allow moving into subdirectories or parent dirs
-\ TODO: Name check on making files (no ".", "..", or "/")
 : rename ( "file" "file" -- )
   narg
   namebuf peekd dir-find dup >r 0< EFILE error
@@ -728,7 +765,7 @@ wordlist constant {edlin}
 \   then
 \   peekd r@ special? 0= if peekd r@ dirent-blk@ bfree then
 \   peekd r@ dirent-erase
-\   peekd addr? r@ dirsz * + dup dirsz + swap b/buf r@ 1+ dirsz * 
+\ peekd addr? r@ dirsz * + dup dirsz + swap b/buf r@ 1+ dirsz * 
 \   - cmove
 \   save rdrop drop ;
 \ 
@@ -766,7 +803,7 @@ wordlist constant {edlin}
 : more (file) link-more ; ( "file" -- )
 : exe (file) link-load  ; ( "file" -- )
 : hexdump (file) link-xdump ; ( "file" -- )
-: stat 
+: stat ( "file" -- )
   peekd (entry) 
   cr 2dup .type 
   cr dirent-blk@ dup bcount ." BCNT: " u. 
@@ -778,8 +815,7 @@ wordlist constant {edlin}
 : cmp ;
 
 {edlin} +order
-\ TODO: Create file if it does not exist
-: edit (file) dup edlin ; ( "file" -- )
+: edit narg (create) dup edlin ; ( "file" -- )
 {edlin} -order
 
 \ Aliases
@@ -806,12 +842,9 @@ defined eforth [if]
 mount loaded @ 0= [if]
 cr .( FFS NOT PRESENT, FORMATTING... ) cr
 fdisk
-\ mkdir dev
-\ cd dev
 mknod [BOOT] 0
 mknod [FAT] 1
 cd ..
-touch help.txt
 edit help.txt
 + FORTH FILE SYSTEM HELP AND COMMANDS
 +
@@ -835,9 +868,9 @@ edit help.txt
 + cp / copy <FILE1> <FILE2>: copy <FILE1> to new <FILE2>
 + df: display file system information
 + ed / edit <FILE>: edit a <FILE> with the block editor
-+ exe <FILE>: execute source <FILE>
++ exe / sh <FILE>: execute source <FILE>
 + fallocate <FILE> <NUM>: make <FILE> with <NUM> blocks
-+ fdisk: **WARNING** format disk deleting all data!
++ fdisk: **WARNING** formats disk deleting all data!
 + fgrow <FILE> <NUM>: grow <FILE> by <NUM> blocks
 + fsync: save any block changes
 + halt / quit / bye: safely halt system
@@ -852,12 +885,27 @@ edit help.txt
 + rm / del <FILE>: remove a <FILE> and not a <DIR>
 + rmdir <DIR>: remove an empty directory
 + sh / shell: invoke file system shell
++ stat <FILE>: display detailed information on <FILE>
 + touch / mkfile <FILE>: make a new file
 + tree: recursively print directories from the current one
 + 
++ Example commands:
++
++ mkdir test
++ cd test
++ edit HELLO.FTH
++ 0 i .( HELLO, WORLD ) cr
++ s q
++ exe HELLO.FTH
++ rm HELLO.FTH
++ ls
++ halt 
 + 
 n 
 + EDITOR COMMANDS
++ This block editor is primitive but usable. It operates on
++ 1024 byte Forth blocks, with 16 lines per block. Some 
++ commands accept a line number or position.
 + q : quit editor
 + s : save work
 + n : move to next block in file, allocating one if needed
@@ -872,8 +920,9 @@ n
 + #line #row ia <LINE>: insert <LINE> into #line at #row
 + ? : display current block
 + z : blank current block
++ y : yank block to storage buffer
++ u : replace screen with storage buffer
 q
-touch demo.fth
 edit demo.fth
 + .( HELLO, WORLD ) cr
 + 2 2 + . cr
