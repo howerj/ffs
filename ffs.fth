@@ -29,6 +29,9 @@
 \ the SUBLEQ code, including tasks. This could even be present
 \ in the file system as a special file, with a linked entry in
 \ the FAT.
+\ * Unit tests, written as a script, fed into the system to
+\ exercise and test all commands and error conditions.
+\ * Optional case insensitivity?
 \
 \ ## Format
 \
@@ -201,8 +204,9 @@ defined spaces 0= [if]
 : spaces begin ?dup 0> while bl emit 1- repeat ;
 [then]
 
+\ TODO: SUBLEQ saves pwd when saving disk.
 wordlist constant {dos}
-: dos only {dos} +order ;
+: dos ( only ) ( mount ) {dos} +order ;
 wordlist constant {ffs} 
 {ffs} +order definitions
 
@@ -288,7 +292,6 @@ variable end   128 end !       \ End block
 variable loaded   0 loaded !   \ Loaded initial program?
 variable eline 0 eline !       \ Empty link in directory
 variable exit-shell 0 exit-shell ! \ Used to exit FS shell
-variable tmove                 \ Use for `move` command
 
 defined eforth [if] : numberify number? ; [else]
 : numberify ( a u -- d -1 | a u 0 : easier than >number )
@@ -525,11 +528,11 @@ defined eforth [if] : numberify number? ; [else]
 : dirent-blk!  ( n blk line -- )
   index maxname + 2 + >r hexp r> swap cmove save ;
 : dirent-erase ( blk line )
-  >la swap addr? + dirsz blank modify ; 
+  >la swap addr? + dirsz blank save ; 
 : >copy addr? copy-store b/buf cmove ;
-: copy> addr? copy-store swap b/buf cmove ;
+: copy> addr? copy-store swap b/buf cmove modify ;
 : >dir >la swap addr? + dirent-store dirsz cmove ; 
-: dir> >la swap addr? + dirent-store swap dirsz cmove ;
+: dir> >la swap addr? + dirent-store swap dirsz cmove modify ;
 
 : fmtdir ( c-addr u dir -- )
   dup bblk
@@ -539,28 +542,6 @@ defined eforth [if] : numberify number? ; [else]
   r@ r> 0 dirent-blk! 
   save ;
 
-\ defined aft 0= [if]
-\ : aft  ( -- aft for gforth )
-\    2drop drop
-\    postpone branch >mark
-\    postpone begin drop do-dest
-\    postpone but ; immediate
-\ [then]
-\ 
-\ \ TODO: Get working in gforth (cannot call `exit` in
-\ \ FOR...NEXT loop in gforth... 
-\ 
-\ : >upper dup 97 123 within if 32 xor then ;
-\ : icompare ( a1 u1 a2 u2 -- n : string comparison )
-\   rot
-\   over - ?dup if >r 2drop r> nip exit then
-\   for ( a1 a2 )
-\     aft
-\       count >upper rot count >upper rot - ?dup
-\       if rdrop nip nip exit then
-\     then
-\   next 2drop 0 ;
- 
 : dir-find ( c-addr u blk -- line | -1 )
   >r fcopy
   dsl ( skip first line at zero, this contains directory info )
@@ -592,7 +573,7 @@ defined eforth [if] : numberify number? ; [else]
    swap dirsz + swap 1+
   repeat
   2drop -1 ;
-: is-empty? empty? dsl <> ; ( blk -- f )
+: is-unempty? empty? dsl <> ; ( blk -- f )
 : fmt.root 
   ( s" [ROOT]" ncopy namebuf dirstart )
   nclear namebuf dirstart
@@ -601,38 +582,21 @@ defined eforth [if] : numberify number? ; [else]
 : dir? dirent-type@ [char] D = ; ( dir line -- f )
 : special? dirent-type@ [char] S = ; ( dir line -- f)
 : file? dirent-type@ [char] F = ; ( dir line -- f)
-
-\ TODO: Get working
-\ : (remove) ( dir line f -- )
-\   >r 2dup dir? if
-\     r@ 0= ENFIL error
-\     2dup dirent-blk@ is-empty? EDNEM error
-\   then
-\   rdrop
-\   2dup special? 0= if 2dup dirent-blk@ bfree then
-\   2dup dirent-erase
-\   >r addr? r@
-\   dirsz * + dup dirsz + swap b/buf r@ 1+ dirsz * 
-\   - cmove
-\   rdrop save drop ;
-\ : (rm) ( f --, call narg before )
-\  >r namebuf peekd dir-find dup 0< EFILE error
-\  peekd swap r> (remove) ;
-
-: (rm) ( f --, call narg before )
-  namebuf peekd dir-find dup >r 0< EFILE error
-  peekd r@ dir? if
-    0= ENFIL error
-    peekd r@ dirent-blk@ is-empty? EDNEM error
-  else
-    0<> ENDIR error
+: (remove) ( dir line f -- )
+  >r 2dup dir? if
+    r@ 0= ENFIL error
+    2dup dirent-blk@ is-unempty? EDNEM error
   then
-  peekd r@ special? 0= if peekd r@ dirent-blk@ bfree then
-  peekd r@ dirent-erase
-  peekd addr? r@ dirsz * + dup dirsz + swap b/buf r@ 1+ dirsz * 
+  rdrop
+  2dup special? 0= if 2dup dirent-blk@ bfree then
+  2dup dirent-erase
+  >r addr? r@
+  dirsz * + dup dirsz + swap b/buf r@ 1+ dirsz * 
   - cmove
-  save rdrop ;
-
+  rdrop save ;
+ : (rm) ( f --, call narg before )
+  >r namebuf peekd dir-find dup 0< EFILE error
+  peekd swap r> (remove) ;
 : (copy) ( src-blks dst-blks )
   swap
   begin
@@ -737,6 +701,19 @@ wordlist constant {edlin}
   namebuf found? dirent-name!
   r> ballocs dup link-blank found? dirent-blk!
   [char] F found? dirent-type! ;
+: (deltree) ( dir -- : recursive delete of directory )
+  >r
+  begin
+    r@ is-unempty? 0= if rdrop exit then
+    ." DEL: " r@ dsl dirent-name@ type cr
+    r@ dsl dir? if
+      r@ dsl dirent-blk@ recurse
+      r@ dsl 1 (remove)
+    else
+      r@ dsl 0 (remove)
+    then
+  again ;
+
 
 {dos} +order definitions
 
@@ -764,14 +741,14 @@ wordlist constant {edlin}
   narg ( dir-find uses `findbuf` )
   namebuf peekd dir-find 0>= EEXIS error
   findbuf peekd r> dirent-name! ;
-\ TODO: Optimize, remove `tmove`, is movebuf needed?
+\ TODO: Optimize, is movebuf needed?
 : move ( "file" "file" -- )
   narg namebuf mcopy 
-  movebuf peekd dir-find dup tmove ! dup 0<= EFILE error
+  movebuf peekd dir-find dup >r dup 0<= EFILE error
   peekd swap >dir
   token count 2dup ncopy
-  movebuf namebuf compare 0= if 2drop exit then
-  2dup s" ." compare 0= if 2drop exit then
+  movebuf namebuf compare 0= if rdrop 2drop exit then
+  2dup s" ." compare 0= if rdrop 2drop exit then
   s" .." compare 0= if 
     popd peekd >r pushd
   else
@@ -780,6 +757,7 @@ wordlist constant {edlin}
         peekd swap dirent-blk@ >r
       else 1 ENDIR error then
     else \ rename
+      rdrop
       drop movebuf peekd dir-find 
       >r namebuf peekd r> dirent-name! exit
     then
@@ -787,7 +765,11 @@ wordlist constant {edlin}
   r@ dfull?
   movebuf r@ dir-find 0>= EEXIS error
   r> eline? dir>
-  peekd tmove @ dirent-erase ;
+  peekd r> 2dup dirent-erase 
+  ( compact )
+  >r addr? r@
+  dirsz * + dup dirsz + swap b/buf r@ 1+ dirsz * 
+  - cmove rdrop save ;
 : mkdir ( "dir" -- )
   dirp @ maxdir >= EDDPT error
   full?
@@ -797,7 +779,6 @@ wordlist constant {edlin}
   balloc dup >r found? dirent-blk!
   [char] D found? dirent-type!
   namebuf r> fmtdir ; 
-\ TODO: Copy to "..", directory, and "."
 : copy ( "src" "dst" -- )
   full?
   narg
@@ -857,35 +838,13 @@ wordlist constant {edlin}
     then
     1+
   repeat drop ; 
-\ : (rm) ( f -- )
-\   namebuf peekd dir-find dup >r 0< EFILE error
-\   peekd r@ dir? if
-\     0= ENFIL error
-\     peekd r@ dirent-blk@ is-empty? EDNEM error
-\   then
-\   peekd r@ special? 0= if peekd r@ dirent-blk@ bfree then
-\   peekd r@ dirent-erase
-\ peekd addr? r@ dirsz * + dup dirsz + swap b/buf r@ 1+ dirsz * 
-\   - cmove
-\   save rdrop drop ;
-\ 
-\ : (deltree)
-\    dsl
-\    begin
-\      dup d/blk <
-\    while
-\      peekd over dirent-type@ bl <= if drop exit then
-\      peekd over dir? if
-\        peekd over dirent-blk@ pushd recurse popd \ delete
-\      else
-\        
-\        \ todo delete file
-\      then
-\      1+
-\    repeat drop ; 
-\ : deltree 
-\   narg 
-\ ;
+: deltree ( "dir" -- )
+  narg
+  namebuf peekd dir-find dup >r 0< EFILE error
+  ." DEL: " peekd r@ dirent-name@ type cr
+  peekd r@ dir? 0= if rdrop 0 (rm) exit then
+  peekd r@ dirent-blk@ (deltree)
+  peekd r> 1 (remove) ;
 \ : shell \ get line / error handling / execute
 \ ( only {shell} +order )
 \  begin
@@ -915,6 +874,9 @@ wordlist constant {edlin}
 : cmp ;
 
 {edlin} +order
+\ TODO: What happens when we remove a file we are editing?
+\ a file lock would help solve that, or hiding the dos
+\ vocab.
 : edit narg (create) dup edlin ; ( "file" -- )
 {edlin} -order
 
@@ -931,6 +893,7 @@ wordlist constant {edlin}
 : sh exe ;
 : touch mkfile ;
 : type cat ;
+: diff cmp ;
 
 defined eforth [if]
  .( HERE: ) here u. cr 
@@ -961,12 +924,17 @@ edit help.txt
 + <https://github.com/howerj/ffs>
 + <https://github.com/howerj/subleq>
 +
++ To simplify the implementation only the `move` command can
++ move files and directories into other directories, `move`
++ also handles targets "." and "..", like `cd` does.
++
 + Commands:
 +
 + cat / type <FILE>: display a file
 + cd / chdir <DIR>: change working directory to <DIR>
 + cls: clear screen
 + cp / copy <FILE1> <FILE2>: copy <FILE1> to new <FILE2>
++ deltree <FILE/DIR>: delete a file, or directory recurisvely
 + df: display file system information
 + ed / edit <FILE>: edit a <FILE> with the block editor
 + exe / sh <FILE>: execute source <FILE>
@@ -976,6 +944,7 @@ edit help.txt
 + fsync: save any block changes
 + ftruncate <FILE> <NUM>: truncate <FILE> to <NUM> blocks
 + halt / quit / bye: safely halt system
++ help: display a short help
 + hexdump <FILE>: hexdump a file
 + ls / dir : list directory
 + mkdir <DIR>: make a directory
@@ -1018,13 +987,35 @@ n
 + x : execute current file from the start
 + #line d : delete #line
 + l : list current block we are editing
-+ w : list command
++ w : list commands available to the editor
 + #line a / i <LINE>: insert <LINE> onto #line of current block
 + #line #row ia <LINE>: insert <LINE> into #line at #row
 + ? : display current block
 + z : blank current block
 + y : yank block to storage buffer
 + u : replace screen with storage buffer
++
++ Note that it is possible to delete a file whilst editing it,
++ which is not advised but should not break anything.
++
++ When editing a file with `edit` if the file does not exist
++ it is created.
++
++ A typical session might look like:
++
++ edit hello.fth
++ 0 i \ HELLO WORLD PROGRAM, VERSION #666, RJH, 15/04/2024
++ 1 i .( AHOY THERE WORLD, SALUTATIONS AND WARM GREETINGS ) cr
++ s
++ q
++ exe hello.fth
++
++ This is a block editor, and not a freeform text editor, so
++ it does follow a strict format of 16 lines of text per block.
++
++ "p" and "n" can be used to move forward and backward in the
++ file, a new block is assigned if "n" is at the end of the
++ file.
 q
 edit demo.fth
 + .( HELLO, WORLD ) cr
