@@ -5,33 +5,9 @@
 \ * Repo: <https://github.com/howerj/ffs>
 \ * Email: <mailto:howe.r.j.89@gmail.com>
 \
-\ ## TO DO
-\ 
-\ * Rewrite `list` so we have more control over output?
-\ * Shell loop that handles custom error
-\ * C utility for manipulating disk images / collating
-\ files.
-\ * Documentation including file system limitations
-\ The first block contains executable code and is executed in
-\ an attempt to mount the file system.
-\ * Optional case insensitivity in file names
-\ * https://stackoverflow.com/questions/4586972/ Fragmentation
-\ calculation
-\ * Full path parsing (e.g a/b/c) for all commands.
-\ * Zero length files, store `blk.end` in block dirent
-\ * Refactor system, factor words
-\ * Find orphaned nodes, data-structure checking, checksums?
-\ * Secure erase
-\ * Executable and read-only types
-\ * For SUBLEQ eFORTH we could mark the first 64 blocks as 
-\ being special, as well as the last block, and not use
-\ offsets. This would allow the file system direct access to
-\ the SUBLEQ code, including tasks. This could even be present
-\ in the file system as a special file, with a linked entry in
-\ the FAT.
-\ * Unit tests, written as a script, fed into the system to
-\ exercise and test all commands and error conditions.
-\ * Optional case insensitivity?
+\ This project contains a file system written for Forth systems
+\ that uses Forth Blocks as the mechanism to store and retrieve
+\ data meaning that this file should be fairly portable.
 \
 \ ## Format
 \
@@ -175,6 +151,49 @@
 \ is described later on, in a help file that is created on
 \ disk.
 \
+\ ## Future Direction
+\
+\ As with any project there are many things that could be done,
+\ only some of which will, writing down these potentialities
+\ can be a sort of catharsis in lieu of doing the actual work
+\ to resolve them. As to what can be done we could; implement
+\ more commands, have optional case insensitivity, raise the
+\ limit on some of the file system limits, refactor many of
+\ the words, improve error handling and detection, calculate
+\ fragmentation and offer a way to defragment the file system,
+\ perform error checking on the file systems data-structures
+\ and orphaned nodes, offer a way to securely erase files,
+\ make a utility in C for manipulating the file system and
+\ importing and exporting files to it, parse full paths in
+\ commands (e.g. `a/b/c`), allow zero length files, add more
+\ file system meta-data, write unit tests, rewrite `list` so
+\ we have more control over how things look like, make a better
+\ more DOS like shell, differing blocks sizes, and more. 
+\
+\ The following provides a way to calculate fragmentation:
+\ <https://stackoverflow.com/questions/4586972>, which will be
+\ very slow on the SUBLEQ system.
+\
+\ Some file system features there are is no intention to ever
+\ implement (such as hard or symbolic links).
+\
+\ The following is a list of features that I do have the
+\ intention of implementing:
+\
+\ * The File Access Methods
+\ (see https://forth-standard.org/standard/file), which can
+\ be built upon this file system. One minor modification would
+\ be required in that the number of bytes in the last allocated
+\ block would need to be stored in the file meta-data.
+\ * Using multiple FAT blocks, this would raise the amount of
+\ data that could be stored in the file system.
+\ * Various optimizations and improvements to the SUBLEQ eForth
+\ version, including merging this code back into
+\ <https://github.com/howerj/subleq>. More blocks could be
+\ mapped in the FAT table, and areas that should not be touched
+\ marked as being special. This would allow us to make a 
+\ special file that contained the SUBLEQ code in it.
+\
 
 defined (order) 0= [if]
 : (order) ( w wid*n n -- wid*n w n )
@@ -204,11 +223,9 @@ defined spaces 0= [if]
 : spaces begin ?dup 0> while bl emit 1- repeat ;
 [then]
 
-\ TODO: SUBLEQ saves pwd when saving disk.
-wordlist constant {dos}
-: dos ( only ) ( mount ) {dos} +order ;
 wordlist constant {ffs} 
 {ffs} +order definitions
+wordlist constant {dos}
 
 defined b/buf 0= [if] 1024 constant b/buf [then]
 defined d>s 0= [if] : d>s drop ; [then]
@@ -382,7 +399,6 @@ defined eforth [if] : numberify number? ; [else]
     then
     2 +
   next drop nip ;
-\ TODO: Link in ascending order
 : ballocs ( n -- blk : allocate `n` non-contiguous blocks )
   ?dup 0= EINTN error
   dup 1 = if drop balloc exit then
@@ -499,23 +515,6 @@ defined eforth [if] : numberify number? ; [else]
    over c@ cvalid 0= if 2drop 0 exit then
    swap 1+ swap 1-
   repeat drop -1 ;
-: (.fat)
-  b/buf 2/ swap - 1- .hex ." :"
-  dup blk.free     = if ." FREE " drop exit then
-  dup blk.bad-blk  = if ." BADB " drop exit then
-  dup blk.end      = if ." END! " drop exit then
-  dup blk.special  = if ." SPEC " drop exit then
-  dup blk.unmapped = if ." NMAP " drop exit then
-  .hex space ;
-: .ffat ( -- )
-  cr
-  fat addr? b/buf 2/ 1- for 
-    dup 16@ r@ (.fat) 2 + 
-    r@ b/buf 2/ swap - 8 mod 0= if cr then
-  next drop ;
-: .sfat fat addr? end @ 2 * dump ; ( -- )
-: .fat fat addr? b/buf 2/ 1- for dup 16@ . 2 + next drop ;
-
 : >la dup 0 d/blk 1+ within 0= -1 and throw dirsz * ;
 : index >la swap addr? + ;
 : dirent-type! index dup >r c! bl r> 1+ c! save ;
@@ -533,7 +532,6 @@ defined eforth [if] : numberify number? ; [else]
 : copy> addr? copy-store swap b/buf cmove modify ;
 : >dir >la swap addr? + dirent-store dirsz cmove ; 
 : dir> >la swap addr? + dirent-store swap dirsz cmove modify ;
-
 : fmtdir ( c-addr u dir -- )
   dup bblk
   >r fcopy
@@ -541,7 +539,6 @@ defined eforth [if] : numberify number? ; [else]
   findbuf r@ 0 dirent-name!
   r@ r> 0 dirent-blk! 
   save ;
-
 : dir-find ( c-addr u blk -- line | -1 )
   >r fcopy
   dsl ( skip first line at zero, this contains directory info )
@@ -553,7 +550,6 @@ defined eforth [if] : numberify number? ; [else]
     1+
   repeat
   rdrop drop -1 ; 
-
 : namelen ( c-addr u -- n : count until space )
   0 >r
   begin
@@ -563,7 +559,6 @@ defined eforth [if] : numberify number? ; [else]
     r> 1+ >r
     1- swap 1+ swap
   repeat 2drop r> ;
-
 : empty? ( blk -- line | -1 : get empty line )
   addr? dirsz dsl * + dsl ( skip first line )
   begin
@@ -574,8 +569,7 @@ defined eforth [if] : numberify number? ; [else]
   repeat
   2drop -1 ;
 : is-unempty? empty? dsl <> ; ( blk -- f )
-: fmt.root 
-  ( s" [ROOT]" ncopy namebuf dirstart )
+: fmt.root ( -- : format root directory )
   nclear namebuf dirstart
   fmtdir blk.end dirstart reserve save ;
 : /root dirp @ for popd drop next ;
@@ -606,19 +600,19 @@ defined eforth [if] : numberify number? ; [else]
     blk.end =
   until <> throw ;
 
+wordlist constant {edlin}
+{edlin} +order definitions
 variable vista 1 vista ! \ Used to be `scr`
 variable head 1 head !
 variable line 0 line !
-wordlist constant {edlin}
-: edlin ( BLOCK editor )
-  vista ! head ! 0 line ! ( only ) [ {edlin} ] literal +order ; 
-{edlin} +order definitions
 : s save ; ( -- : save edited block )
 : q s [ {edlin} ] literal -order ( dos ) ; ( -- : quit editor )
-: ? vista @ . ;    ( -- : print block number of current block )
+: ? head @ . vista @ . line @ . ; ( -- : print blk and line )
 : l vista @ block? list ; ( -- : list current block )
-: x q head @ link-load head @ vista @ edlin ; ( -- : exe file )
-: ia 2 ?depth [ $6 ] literal lshift + vista @ addr? + tib
+: x q head @ link-load
+    [ {edlin} ] literal +order ; ( -- : exe file )
+: ia 2 ?depth 
+  [ $6 ] literal lshift + vista @ addr? + tib
   >in @ + swap source nip >in @ - cmove tib @ >in ! l ;
 : a 0 swap ia ; : i a ; ( line --, "line" : insert line at )
 : w get-order [ {edlin} ] literal 1 ( -- : list cmds )
@@ -636,7 +630,10 @@ wordlist constant {edlin}
    [ $40 ] literal blank l ; ( line -- : delete line )
 : - line @ -1 line +! line @ 0< if 0 line ! p then ;
 : + line @ a  1 line +! line @ l/blk >= if 0 line ! n then ;
-{edlin} -order {ffs} +order definitions
+{ffs} +order definitions
+: edlin ( BLOCK editor )
+  vista ! head ! 0 line ! ( only ) [ {edlin} ] literal +order ; 
+{edlin} -order
 
 : .type ( blk line -- )
     2dup dir?     if ." DIR   " then
@@ -661,7 +658,6 @@ wordlist constant {edlin}
     cr
     1+
   repeat 2drop ;
-
 : narg token count ncopy ; ( "token" -- )
 : (entry) ( dir, "file" -- blk line )
   >r narg
@@ -671,19 +667,6 @@ wordlist constant {edlin}
   2dup dirent-type@ [char] D = ENFIL error
   dirent-blk@ ;
 : found? peekd eline? ; ( -- cwd line )
-
-\ : cmd> cr ." CMD> " ;
-\ : (shell) \ TODO: Implement
-\  grab count 2dup ncopy
-\  2dup peekd dir-find dup >r 0< if
-\    rdrop evaluate
-\  else
-\    2drop ." FILE EXISTS"
-\    rdrop
-\  then
-\  \ TODO: Find file, execute? Path var? Execute command
-\ ;
-
 : dfull? empty? dup eline ! -1 = EDFUL error ; ( blk -- )
 : full? peekd dfull? ; ( -- : is cwd full? )
 : (create) ( -- blk: call narg prior, create or open existing )
@@ -714,7 +697,6 @@ wordlist constant {edlin}
     then
   again ;
 
-
 {dos} +order definitions
 
 : df cr
@@ -741,7 +723,6 @@ wordlist constant {edlin}
   narg ( dir-find uses `findbuf` )
   namebuf peekd dir-find 0>= EEXIS error
   findbuf peekd r> dirent-name! ;
-\ TODO: Optimize, is movebuf needed?
 : move ( "file" "file" -- )
   narg namebuf mcopy 
   movebuf peekd dir-find dup >r dup 0<= EFILE error
@@ -845,12 +826,6 @@ wordlist constant {edlin}
   peekd r@ dir? 0= if rdrop 0 (rm) exit then
   peekd r@ dirent-blk@ (deltree)
   peekd r> 1 (remove) ;
-\ : shell \ get line / error handling / execute
-\ ( only {shell} +order )
-\  begin
-\    cmd>
-\    [ ' (shell) ] literal catch elucidate exit-shell @ 
-\  until 0 exit-shell ! ; 
 : help ( -- )
   cr
   cr ." Use `more help.txt` in the root directory for help." 
@@ -868,15 +843,12 @@ wordlist constant {edlin}
   cr dirent-blk@ dup bcount ." BCNT: " u. 
   cr ." BLKS: " link-u ;
 
-: defrag ; \ compact disk
-: chkdsk ;
-: grep ; ( search file -- )
-: cmp ;
+\ : defrag ; \ compact disk
+\ : chkdsk ;
+\ : grep ; ( search file -- )
+\ : cmp ;
 
 {edlin} +order
-\ TODO: What happens when we remove a file we are editing?
-\ a file lock would help solve that, or hiding the dos
-\ vocab.
 : edit narg (create) dup edlin ; ( "file" -- )
 {edlin} -order
 
@@ -893,7 +865,7 @@ wordlist constant {edlin}
 : sh exe ;
 : touch mkfile ;
 : type cat ;
-: diff cmp ;
+\ : diff cmp ;
 
 defined eforth [if]
  .( HERE: ) here u. cr 
@@ -1026,5 +998,11 @@ mkdir bin
 
 .( DONE ) cr
 [then]
+
+forth-wordlist +order definitions
+: dos ( only ) {dos} +order {ffs} +order mount {ffs} -order ;
+
+{ffs} +order ( `move` needs higher priority )
+
 
 
