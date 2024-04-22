@@ -57,6 +57,13 @@
 \ blocks have special meaning (usually the 0 block) and cannot
 \ be used.
 \
+\ The FAT is simply a linked list, it can be traversed in one
+\ direction which can slow down seeking. Apart from copying the
+\ FAT into a different data-structure that is faster to use,
+\ a XOR linked list (see the following:
+\ <https://en.wikipedia.org/wiki/XOR_linked_list>)
+\ Could be used in lieu of a doubly linked list.
+\
 \ ### Text Directory Format
 \
 \ The directory format is incredibly simple, it consists of
@@ -194,6 +201,9 @@
 \ marked as being special. This would allow us to make a 
 \ special file that contained the SUBLEQ code in it.
 \
+\ TODO: 16 byte directory entires, for 64 entries per dir
+\ (11 byte dir names...)
+\
 
 defined (order) 0= [if]
 : (order) ( w wid*n n -- wid*n w n )
@@ -218,6 +228,8 @@ use ffs.fb
 defined ?depth 0= [if]
 : ?depth depth 1- > -4 and throw ;
 [then]
+
+defined du. 0= [if] : du. <# #s #> type ; [then]
 
 defined spaces 0= [if]
 : spaces begin ?dup 0> while bl emit 1- repeat ;
@@ -246,6 +258,8 @@ dup 1+ swap constant ENDIR ( not a directory )
 dup 1+ swap constant EARGU ( invalid argument )
 dup 1+ swap constant EINTN ( internal error )
 dup 1+ swap constant EINAM ( invalid name )
+dup 1+ swap constant EHAND ( no free handles )
+dup 1+ swap constant EPERM ( permission denied )
 drop
 
 : e>s ( code -- )
@@ -264,6 +278,8 @@ drop
   dup EARGU = if drop s" invalid argument" exit then
   dup EINTN = if drop s" internal error" exit then
   dup EINAM = if drop s" invalid name" exit then
+  dup EHAND = if drop s" no free handles" exit then
+  dup EPERM = if drop s" permission denied" exit then
   drop s" unknown" ;
 
 variable error-level 0 error-level !
@@ -291,7 +307,6 @@ variable dirp 0 dirp ! \ Directory Pointer
 variable read-only 0 read-only !  \ Make file system read only 
 $0100 constant version \ File System version
 
-
 defined eforth [if]
 variable start 65 start !      \ Starting block
 variable end   126 end !       \ End block
@@ -306,7 +321,7 @@ variable end   128 end !       \ End block
 16 constant l/blk              \ Lines per block
 64 constant c/blk              \ Columns per block
 32 constant d/blk              \ Directories per block
-variable loaded   0 loaded !   \ Loaded initial program?
+variable loaded 0 loaded !     \ Loaded initial program?
 variable eline 0 eline !       \ Empty link in directory
 variable exit-shell 0 exit-shell ! \ Used to exit FS shell
 
@@ -339,8 +354,15 @@ defined eforth [if] : numberify number? ; [else]
   start @ + dup start @ end @ 1+ within 0= EIBLK error ;
 : addr? block? block ; ( blk -- addr )
 : eline? eline @ ;
+: little-endian base c@ 0<> ; 
+cell 2 = [if]
+\ TODO: Endianess check as well
+: 16! ! modify ;
+: 16@ @ ;
+[else]
 : 16! 2dup c! swap 8 rshift swap 1+ c! modify ;
 : 16@ dup c@ swap 1+ c@ 8 lshift or ;
+[then]
 : linkable dup dirstart 1+ end @ 1+ within ; ( blk -- blk f )
 : link ( blk -- blk : load next block from FAT )
   linkable 0= if drop blk.end exit then
@@ -526,6 +548,10 @@ defined eforth [if] : numberify number? ; [else]
   index maxname + 2 + 5 numberify 0= throw d>s ;
 : dirent-blk!  ( n blk line -- )
   index maxname + 2 + >r hexp r> swap cmove save ;
+: dirent-rem@ ( blk line -- n )
+  index maxname + 2 + 10 numberify 0= throw d>s ;
+: dirent-rem! ( n blk line -- )
+  index maxname + 2 + 5 + >r hexp r> swap cmove save ;
 : dirent-erase ( blk line )
   >la swap addr? + dirsz blank save ; 
 : >copy addr? copy-store b/buf cmove ;
@@ -537,6 +563,7 @@ defined eforth [if] : numberify number? ; [else]
   >r fcopy
   [char] \ r@ 0 dirent-type!
   findbuf r@ 0 dirent-name!
+  b/buf r@ 0 dirent-rem!
   r@ r> 0 dirent-blk! 
   save ;
 : dir-find ( c-addr u blk -- line | -1 )
@@ -639,6 +666,7 @@ variable line 0 line !
     2dup dir?     if ." DIR   " then
     2dup file?    if ." FILE  " then 
          special? if ." SPEC  " then ;
+
 : .dir ( blk -- )
   cr
   ( ." /" dup 0 dirent-name@ type cr )
@@ -654,6 +682,7 @@ variable line 0 line !
       2dup dirent-blk@ ." *" u. 
     else
       2dup dirent-blk@ bcount u.
+      \ TODO: Display remaining as well?
     then
     cr
     1+
@@ -675,6 +704,7 @@ variable line 0 line !
   drop
   full?
   namebuf found? dirent-name!
+  b/buf found? dirent-rem!
   balloc dup link-blank found? dirent-blk!
   [char] F found? dirent-type!
   found? dirent-blk@ ;
@@ -682,6 +712,7 @@ variable line 0 line !
   >r
   namebuf peekd dir-find 0>= EEXIS error
   namebuf found? dirent-name!
+  b/buf found? dirent-rem!
   r> ballocs dup link-blank found? dirent-blk!
   [char] F found? dirent-type! ;
 : (deltree) ( dir -- : recursive delete of directory )
@@ -757,6 +788,7 @@ variable line 0 line !
   narg
   namebuf peekd dir-find 0>= EEXIS error
   namebuf found? dirent-name!
+  b/buf found? dirent-rem!
   balloc dup >r found? dirent-blk!
   [char] D found? dirent-type!
   namebuf r> fmtdir ; 
@@ -787,6 +819,7 @@ variable line 0 line !
   integer? >r
   namebuf peekd dir-find 0>= EEXIS error
   namebuf found? dirent-name!
+  b/buf found? dirent-rem!
   r> found? dirent-blk! 
   [char] S found? dirent-type! ;
 : rm narg 0 (rm) ; ( "file" -- )
@@ -1002,7 +1035,176 @@ mkdir bin
 forth-wordlist +order definitions
 : dos ( only ) {dos} +order {ffs} +order mount {ffs} -order ;
 
-{ffs} +order ( `move` needs higher priority )
+defined eforth 0= [if]
+\ If we are running in eForth we want to add the definitions
+\ to the main Forth vocabulary, otherwise we want to add them
+\ to the `{ffs}` vocabulary so as not to redefine the gforths
+\ File Access Words.
+\
+\ We also want the `move` from FFS to have higher priority than
+\ the standard vocabulary word when we are trying to use the
+\ file system, which is achieved if add `{ffs}` with `+order`.
+{ffs} +order definitions
+[then]
 
+\ File Handle Structure
+\
+\ FLAGS:    16/cell
+\ HEAD-BLK: 16/cell
+\ BLK-END:  16/cell
+\ BLK:      16/cell
+\ BLK-POS:  16/cell
+\ DIR-LINE: 16/cell
+\ DIR-BLK:  16/cell
+\
+\ TODO: trap block for ior and for bad-blocks
+\ TODO: Wrap File System functions and trap, returning IOR
+\ TODO: Optionally allow directories to be opened up
+\ TODO: Suppress error messages in favor of IORs
+\
+
+
+8 constant fopen-max
+7 cells constant fhandle-size
+create fhandles fhandle-size fopen-max * dup cells allot 
+       fhandles swap erase
+
+create newline 2 c, $D c, $A c, align
+
+ 1 constant flg.used
+ 2 constant flg.ren
+ 4 constant flg.wen
+ 8 constant flg.stdin
+16 constant flg.stdout
+32 constant flg.error \ TODO: Use this to indicate problems
+
+\ Offsets into the file handle structure
+: f.flags 0 cells + ; ( File Flags and Options )
+: f.head 1 cells + ;  ( Head Block of file )
+: f.end  2 cells + ;  ( Bytes in last block )
+: f.blk  3 cells + ;  ( Current Block Position )
+: f.pos  4 cells + ;  ( Position in bytes within block )
+: f.dline 5 cells + ; ( Directory Line of File )
+: f.dblk 6 cells + ;  ( Directory Block of File )
+
+: set tuck @ or swap ! ; ( u a -- )
+: toggle tuck @ xor swap ! ; ( u a -- )
+: clear tuck @ swap invert and swap ! ; ( u a -- )
+: fvalid? dup 0 fopen-max 1+ within 0= throw ; 
+: findex fvalid? fhandles swap fhandle-size * + ;
+: ferase findex fhandle-size erase ;
+: last? link blk.end = ; ( blk -- f )
+
+: unused? ( -- ptr f : find a free handle if one exists )
+  0
+  begin
+   dup fopen-max <
+  while
+   dup findex f.flags @ 0= if -1 exit then
+   1+
+  repeat
+  drop -1 0 ;
+: take ( -- ptr f : take a free handle if one exists )
+  unused? 0= if 0 exit then
+  dup ferase
+  dup findex f.flags flg.used swap set -1 ;
+
+: r/o flg.ren ; ( -- fam )
+: w/o flg.wen ; ( -- fam )
+: r/w r/o w/o or ; ( -- fam )
+: fam? dup r/w invert and 0<> throw ; ( fam -- fam )
+: bin fam? ; ( fam -- fam )
+
+: open-file ( c-addr u fam -- fileid ior ) 
+  fam?
+  >r ncopy namebuf s" ." fcopy findbuf compare 0= if 
+   ( TODO: special file -> stdin/stdout )
+     take 0= if rdrop -1 EHAND exit then
+     r> flg.stdin or flg.stdout or
+     exit
+  then
+  namebuf peekd dir-find dup 0< if 
+    rdrop drop -1 EFILE exit 
+  then
+  peekd over dir? ENFIL error
+  take 0= if rdrop 2drop -1 EHAND exit then
+  dup r> swap >r >r
+  findex r> over f.flags set
+  >r
+  dup r@ f.dline !
+  peekd r@ f.dblk !
+  peekd over dirent-blk@ dup r@ f.blk ! r@ f.head !
+  0 r@ f.end ! \ TODO: Retrieve from file.
+  drop rdrop r> 0 ; 
+\ TODO: Get working
+: create-file ( c-addr u fam -- fileid ior )
+  fam? >r ncopy full? 1 (mkfile) save
+  namebuf r> open-file ; 
+: flush-file ( fileid -- ior )  
+  fvalid? drop 0 ;   \ TODO: Write remaining bytes to dirent?
+: close-file ( fileid -- ior )
+  dup flush-file ?dup if nip exit then ferase ; 
+: file-size ( fileid -- ud ior ) 
+  findex dup f.head @ bcount swap 
+  f.end @ >r b/buf um* r> 0 d- 0 ; 
+: include-file ( fileid -- )
+  findex 
+  dup f.flags @ flg.ren and 0= EPERM error
+( dup f.flags @ flg.stdin and 0= EPERM error )
+  f.head @ link-load ; 
+: include exe ; ( "file" -- )
+: included ( c-addr u -- )
+  ncopy namebuf peekd dir-find dup 0< EFILE error
+  peekd swap dirent-blk@ link-load ; 
+: rename-file ( c-addr1 u1 c-addr2 u2 -- ior ) 
+  mcopy ncopy
+  namebuf peekd dir-find dup >r 0< if rdrop EFILE exit then
+  movebuf peekd dir-find 0>= if rdrop EEXIS exit then
+  findbuf peekd r> dirent-name! 0 ;
+\ : delete-file ncopy 0 (rm) 0 ; ( c-addr u -- ior )
+: delete-file ( c-addr u -- ior )
+ ncopy 0 [ ' (rm) ] literal catch ?dup if nip then ; 
+
+: file-position ( fileid -- ud ior ) 
+\ TODO: Count block position from `head`
+; 
+: file-status ; ( c-addr u -- x ior ) 
+: read-file ( c-addr u fileid -- u ior )
+  \ TODO: Zero input first?
+  findex dup f.flags @ flg.ren and
+  0= if 2drop drop EPERM exit then
+  dup f.flags @ flg.stdin and if
+    drop 
+\    >r
+\    0 begin
+\      dup r@ <
+\    while
+\      over key swap !
+\      swap
+\    repeat
+  then
+  -1 throw \ TODO: Implement
+;  
+: read-line ( c-addr u fileid -- u flag ior ) 
+; 
+: write-file ( c-addr u fileid -- ior ) 
+  findex dup f.flags @ flg.wen and 
+  0= if 2drop drop EPERM exit then
+  dup f.flags @ flg.stdout and if
+    drop type exit
+  then
+  
+  -1 throw \ TODO: Implement
+;
+ 
+: write-line ( c-addr u fileid -- ior )
+  dup >r write-file ?dup if rdrop exit then
+  newline count r> write-file ;  
+: refill ; ( -- flag )
+: reposition-file ; ( ud fileid -- ior ) 
+: resize-file ( ud fileid -- ior )
+; 
+: require ; 
+: required ;
 
 

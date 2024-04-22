@@ -23,6 +23,7 @@ reset
 
 run << EOF
 dos
+df
 mkdir a
 mkdir b
 mkdir c
@@ -34,4 +35,5 @@ move a b
 move c b
 tree
 deltree b
+df
 EOF
