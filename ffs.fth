@@ -203,6 +203,10 @@
 \
 \ TODO: 16 byte directory entires, for 64 entries per dir
 \ (11 byte dir names...)
+\ TODO: Multiple FAT blocks
+\ TODO: better Subleq eForth mapping
+\ TODO: Add muxleq for quicker speed?
+\ TODO: Better path parsing?
 \
 
 defined (order) 0= [if]
@@ -230,10 +234,12 @@ defined ?depth 0= [if]
 [then]
 
 defined du. 0= [if] : du. <# #s #> type ; [then]
+defined d- 0= [if] : d- dnegate d+ ; [then]
 
 defined spaces 0= [if]
 : spaces begin ?dup 0> while bl emit 1- repeat ;
 [then]
+
 
 wordlist constant {ffs} 
 {ffs} +order definitions
@@ -260,6 +266,9 @@ dup 1+ swap constant EINTN ( internal error )
 dup 1+ swap constant EINAM ( invalid name )
 dup 1+ swap constant EHAND ( no free handles )
 dup 1+ swap constant EPERM ( permission denied )
+dup 1+ swap constant ELOCK ( could not obtain lock )
+dup 1+ swap constant ERONY ( attempt to modify read-only FS )
+dup 1+ swap constant EHAND ( file I/O error )
 drop
 
 : e>s ( code -- )
@@ -280,6 +289,9 @@ drop
   dup EINAM = if drop s" invalid name" exit then
   dup EHAND = if drop s" no free handles" exit then
   dup EPERM = if drop s" permission denied" exit then
+  dup ELOCK = if drop s" already locked" exit then
+  dup ERONY = if drop s" read only" exit then
+  dup EHAND = if drop s" file i/o error" exit then
   drop s" unknown" ;
 
 variable error-level 0 error-level !
@@ -293,6 +305,7 @@ $FFFE constant blk.special  \ Special blocks
 $FFFF constant blk.free     \ Block is free to use
 16 constant maxname         \ Maximum directory entry length
  8 constant maxdir          \ Maximum directory depth
+b/buf constant #rem         \ Default Remaining/Used bytes
 create dirstk maxdir cells allot dirstk maxdir cells erase
 
 : namebuf: create here maxname dup allot blank does> maxname ;
@@ -324,6 +337,7 @@ variable end   128 end !       \ End block
 variable loaded 0 loaded !     \ Loaded initial program?
 variable eline 0 eline !       \ Empty link in directory
 variable exit-shell 0 exit-shell ! \ Used to exit FS shell
+variable vlock 0 vlock !       \ File System Global Lock
 
 defined eforth [if] : numberify number? ; [else]
 : numberify ( a u -- d -1 | a u 0 : easier than >number )
@@ -342,6 +356,11 @@ defined eforth [if] : numberify number? ; [else]
   repeat
   2drop r> if dnegate then r> base ! -1 ;
 [then]
+
+: lock? vlock @ 0<> ; ( -- f : is locked? )
+: lock lock? ELOCK error 1 vlock ! ; ( -- )
+: unlock 0 vlock ! ; ( -- )
+: ro? read-only @ 0<> ERONY error ; ( -- f )
 : nul? count nip 0= ; ( a -- f : is counted word empty? )
 : token bl word dup nul? EARGU error ; ( -- b )
 : grab ( <word> -- a : get word from input stream  )
@@ -355,12 +374,11 @@ defined eforth [if] : numberify number? ; [else]
 : addr? block? block ; ( blk -- addr )
 : eline? eline @ ;
 : little-endian base c@ 0<> ; 
-cell 2 = [if]
-\ TODO: Endianess check as well
-: 16! ! modify ;
+cell 2 = little-endian and [if]
+: 16! ro? ! modify ;
 : 16@ @ ;
 [else]
-: 16! 2dup c! swap 8 rshift swap 1+ c! modify ;
+: 16! ro? 2dup c! swap 8 rshift swap 1+ c! modify ;
 : 16@ dup c@ swap 1+ c@ 8 lshift or ;
 [then]
 : linkable dup dirstart 1+ end @ 1+ within ; ( blk -- blk f )
@@ -549,7 +567,7 @@ cell 2 = [if]
 : dirent-blk!  ( n blk line -- )
   index maxname + 2 + >r hexp r> swap cmove save ;
 : dirent-rem@ ( blk line -- n )
-  index maxname + 2 + 10 numberify 0= throw d>s ;
+  index maxname + 7 + 5 numberify 0= throw d>s ;
 : dirent-rem! ( n blk line -- )
   index maxname + 2 + 5 + >r hexp r> swap cmove save ;
 : dirent-erase ( blk line )
@@ -563,7 +581,7 @@ cell 2 = [if]
   >r fcopy
   [char] \ r@ 0 dirent-type!
   findbuf r@ 0 dirent-name!
-  b/buf r@ 0 dirent-rem!
+  #rem r@ 0 dirent-rem!
   r@ r> 0 dirent-blk! 
   save ;
 : dir-find ( c-addr u blk -- line | -1 )
@@ -640,7 +658,7 @@ variable line 0 line !
     [ {edlin} ] literal +order ; ( -- : exe file )
 : ia 2 ?depth 
   [ $6 ] literal lshift + vista @ addr? + tib
-  >in @ + swap source nip >in @ - cmove tib @ >in ! l ;
+  >in @ + swap source nip >in @ - cmove tib @ >in ! ;
 : a 0 swap ia ; : i a ; ( line --, "line" : insert line at )
 : w get-order [ {edlin} ] literal 1 ( -- : list cmds )
      set-order words set-order ; 
@@ -652,11 +670,11 @@ variable line 0 line !
   0 line ! s head @ vista @ previous vista ! l ; 
 : y vista @ >copy ;
 : u vista @ copy> save ;
-: z vista @ addr? b/buf blank l ; ( -- : erase current block )
+: z vista @ addr? b/buf blank ; ( -- : erase current block )
 : d 1 ?depth >r vista @ addr? r> [ $6 ] literal lshift +
-   [ $40 ] literal blank l ; ( line -- : delete line )
+   [ $40 ] literal blank ; ( line -- : delete line )
 : - line @ -1 line +! line @ 0< if 0 line ! p then ;
-: + line @ a  1 line +! line @ l/blk >= if 0 line ! n then ;
+: + line @ a 1 line +! line @ l/blk >= if 0 line ! n then ;
 {ffs} +order definitions
 : edlin ( BLOCK editor )
   vista ! head ! 0 line ! ( only ) [ {edlin} ] literal +order ; 
@@ -704,7 +722,7 @@ variable line 0 line !
   drop
   full?
   namebuf found? dirent-name!
-  b/buf found? dirent-rem!
+  #rem found? dirent-rem!
   balloc dup link-blank found? dirent-blk!
   [char] F found? dirent-type!
   found? dirent-blk@ ;
@@ -712,7 +730,7 @@ variable line 0 line !
   >r
   namebuf peekd dir-find 0>= EEXIS error
   namebuf found? dirent-name!
-  b/buf found? dirent-rem!
+  #rem found? dirent-rem!
   r> ballocs dup link-blank found? dirent-blk!
   [char] F found? dirent-type! ;
 : (deltree) ( dir -- : recursive delete of directory )
@@ -728,12 +746,17 @@ variable line 0 line !
     then
   again ;
 
+: yes? if s" yes" exit then s" no" ;
+
 {dos} +order definitions
+
 
 : df cr
    loaded @ 0= if ." NO DISK" cr exit then
    ." MOUNTED" cr
    ." BLK SZ:    " b/buf u. cr
+   ." READ ONLY? " read-only @ yes? type cr
+   ." LOCKED?    " vlock @ yes? type cr
    ." START BLK: " start @ u. cr
    ." END BLK:   " end @ u. cr
    ." MAX DIRS:  " maxdir u. cr
@@ -747,14 +770,19 @@ variable line 0 line !
 : ls peekd .dir ; 
 : dir peekd block? list ;
 : mount init block? load 0 dirp ! dirstart pushd ;
-: fdisk bcheck fmt.init fmt.fat fmt.blks fmt.root mount ; 
+: freeze 1 read-only ! ;
+: melt 0 read-only ! ;
+: funlock ." LOCKED? " vlock @ yes? type cr unlock ;
+: fdisk melt bcheck fmt.init fmt.fat fmt.blks fmt.root mount ; 
 : rename ( "file" "file" -- )
+  ro?
   narg
   namebuf peekd dir-find dup >r 0< EFILE error
   narg ( dir-find uses `findbuf` )
   namebuf peekd dir-find 0>= EEXIS error
   findbuf peekd r> dirent-name! ;
 : move ( "file" "file" -- )
+  ro?
   narg namebuf mcopy 
   movebuf peekd dir-find dup >r dup 0<= EFILE error
   peekd swap >dir
@@ -783,16 +811,18 @@ variable line 0 line !
   dirsz * + dup dirsz + swap b/buf r@ 1+ dirsz * 
   - cmove rdrop save ;
 : mkdir ( "dir" -- )
+  ro?
   dirp @ maxdir >= EDDPT error
   full?
   narg
   namebuf peekd dir-find 0>= EEXIS error
   namebuf found? dirent-name!
-  b/buf found? dirent-rem!
+  #rem found? dirent-rem!
   balloc dup >r found? dirent-blk!
   [char] D found? dirent-type!
   namebuf r> fmtdir ; 
 : copy ( "src" "dst" -- )
+  ro?
   full?
   narg
   namebuf peekd dir-find dup >r 0< EFILE error
@@ -803,27 +833,30 @@ variable line 0 line !
   r> found? dirent-blk!
   [char] F found?  dirent-type!
   namebuf found? dirent-name! ;
-: mkfile full? narg 1 (mkfile) ; ( "file" -- )
-: fallocate full? narg integer? (mkfile) ; ( "file" count -- )
+: mkfile ro? full? narg 1 (mkfile) ; ( "file" -- )
+: fallocate ro? full? narg integer? (mkfile) ; ( "file" u -- )
 : fgrow ( "file" count -- )
+  ro?
   narg integer? 
   namebuf peekd dir-find dup >r 0< ENFIL error
   ballocs dup link-blank peekd r> dirent-blk@ fat-append save ;
 : ftruncate ( "file" count -- )
+  ro?
   narg integer?
   namebuf peekd dir-find dup >r 0< ENFIL error
   peekd r> dirent-blk@ btruncate ;
 : mknod ( "file" node -- )
+  ro?
   full?
   narg
   integer? >r
   namebuf peekd dir-find 0>= EEXIS error
   namebuf found? dirent-name!
-  b/buf found? dirent-rem!
+  #rem found? dirent-rem!
   r> found? dirent-blk! 
   [char] S found? dirent-type! ;
-: rm narg 0 (rm) ; ( "file" -- )
-: rmdir narg 1 (rm) ; ( "dir" -- )
+: rm ro? narg 0 (rm) ; ( "file" -- )
+: rmdir ro? narg 1 (rm) ; ( "dir" -- )
 : cd ( "dir" -- )
   token count 2dup s" ." compare 0= if 2drop exit then
   2dup s" .." compare 0= if 2drop popd drop exit then
@@ -853,6 +886,7 @@ variable line 0 line !
     1+
   repeat drop ; 
 : deltree ( "dir" -- )
+  ro?
   narg
   namebuf peekd dir-find dup >r 0< EFILE error
   ." DEL: " peekd r@ dirent-name@ type cr
@@ -880,9 +914,10 @@ variable line 0 line !
 \ : chkdsk ;
 \ : grep ; ( search file -- )
 \ : cmp ;
+\ : wc ;
 
 {edlin} +order
-: edit narg (create) dup edlin ; ( "file" -- )
+: edit ro? narg (create) dup edlin ; ( "file" -- )
 {edlin} -order
 
 \ Aliases
@@ -946,12 +981,15 @@ edit help.txt
 + fallocate <FILE> <NUM>: make <FILE> with <NUM> blocks
 + fdisk: **WARNING** formats disk deleting all data!
 + fgrow <FILE> <NUM>: grow <FILE> by <NUM> blocks
++ freeze: Freeze file system - Turn on read only mode
 + fsync: save any block changes
 + ftruncate <FILE> <NUM>: truncate <FILE> to <NUM> blocks
++ funlock: Display FS lock and Force unlock of file system 
 + halt / quit / bye: safely halt system
 + help: display a short help
 + hexdump <FILE>: hexdump a file
 + ls / dir : list directory
++ melt: Unfreeze file system - Turn off read only mode
 + mkdir <DIR>: make a directory
 + mknode <FILE> <NUM>: make a special <FILE> with <NUM>
 + more <FILE>: display a file, pause for each block
@@ -1061,6 +1099,14 @@ defined eforth 0= [if]
 \ TODO: Wrap File System functions and trap, returning IOR
 \ TODO: Optionally allow directories to be opened up
 \ TODO: Suppress error messages in favor of IORs
+\ TODO: Handle deletion of open files?
+\ TODO: Lock file system or directories, with "lock", "unlock",
+\ "trylock", to prevent invalid operations, add Error Code.
+\ Files could be locked by replacing their type with the lower
+\ case equivalent
+\ TODO: Better name checking on "create-file", we should not
+\ be able to create files with preceding whitespace for
+\ example.
 \
 
 
@@ -1095,6 +1141,26 @@ create newline 2 c, $D c, $A c, align
 : ferase findex fhandle-size erase ;
 : last? link blk.end = ; ( blk -- f )
 
+: flag swap if emit exit then drop ." -" ; ( flg ch -- )
+: .flag
+  dup flg.used   and [char] U flag
+  dup flg.ren    and [char] R flag
+  dup flg.wen    and [char] W flag
+  dup flg.stdin  and [char] I flag
+  dup flg.stdout and [char] O flag
+  dup flg.error  and [char] ! flag
+  drop ;
+: .fhandle ( handle -- )
+  findex cr
+  dup f.flags @ ." FLG: " dup u. ." -> " .flag cr
+  dup f.head  @ ." HED: " u. cr
+  dup f.end   @ ." END: " u. cr
+  dup f.blk   @ ." BLK: " u. cr
+  dup f.pos   @ ." POS: " u. cr
+  dup f.dline @ ." DLN: " u. cr
+  dup f.dblk  @ ." DBK: " u. cr
+  drop ;
+
 : unused? ( -- ptr f : find a free handle if one exists )
   0
   begin
@@ -1112,45 +1178,53 @@ create newline 2 c, $D c, $A c, align
 : r/o flg.ren ; ( -- fam )
 : w/o flg.wen ; ( -- fam )
 : r/w r/o w/o or ; ( -- fam )
-: fam? dup r/w invert and 0<> throw ; ( fam -- fam )
+: stdio r/w flg.stdout flg.stdin or or ;
+: fam? dup stdio invert and 0<> throw ; ( fam -- fam )
 : bin fam? ; ( fam -- fam )
+: ferror findex f.flags @ flg.error and 0<> ; ( handle -- f )
+: fail findex f.flags flg.error swap set ; ( handle -- )
 
 : open-file ( c-addr u fam -- fileid ior ) 
   fam?
   >r ncopy namebuf s" ." fcopy findbuf compare 0= if 
-   ( TODO: special file -> stdin/stdout )
      take 0= if rdrop -1 EHAND exit then
-     r> flg.stdin or flg.stdout or
+     dup findex f.flags
+     r> flg.stdin or flg.stdout or swap set
+     0
      exit
   then
   namebuf peekd dir-find dup 0< if 
     rdrop drop -1 EFILE exit 
   then
-  peekd over dir? ENFIL error
+  peekd over dir? if rdrop drop 0 ENFIL exit then
   take 0= if rdrop 2drop -1 EHAND exit then
   dup r> swap >r >r
   findex r> over f.flags set
   >r
   dup r@ f.dline !
   peekd r@ f.dblk !
+  peekd over dirent-rem@ r@ f.end !
   peekd over dirent-blk@ dup r@ f.blk ! r@ f.head !
-  0 r@ f.end ! \ TODO: Retrieve from file.
   drop rdrop r> 0 ; 
-\ TODO: Get working
+\ TODO: Better iors 
 : create-file ( c-addr u fam -- fileid ior )
-  fam? >r ncopy full? 1 (mkfile) save
-  namebuf r> open-file ; 
+  fam? >r 2dup ncopy full? 1 (mkfile) save
+  r> open-file ; 
 : flush-file ( fileid -- ior )  
+  dup ferror if 2drop EHAND exit then
   fvalid? drop 0 ;   \ TODO: Write remaining bytes to dirent?
 : close-file ( fileid -- ior )
-  dup flush-file ?dup if nip exit then ferase ; 
+  dup findex f.flags @ flg.used and 0= if drop EHAND exit then
+  dup flush-file ?dup if nip exit then ferase 0 ; 
 : file-size ( fileid -- ud ior ) 
+  dup ferror if 2drop 0 0 EHAND exit then
   findex dup f.head @ bcount swap 
   f.end @ >r b/buf um* r> 0 d- 0 ; 
 : include-file ( fileid -- )
+  dup ferror EHAND error
   findex 
   dup f.flags @ flg.ren and 0= EPERM error
-( dup f.flags @ flg.stdin and 0= EPERM error )
+  dup f.flags @ flg.stdin and 0<> EPERM error
   f.head @ link-load ; 
 : include exe ; ( "file" -- )
 : included ( c-addr u -- )
@@ -1161,14 +1235,23 @@ create newline 2 c, $D c, $A c, align
   namebuf peekd dir-find dup >r 0< if rdrop EFILE exit then
   movebuf peekd dir-find 0>= if rdrop EEXIS exit then
   findbuf peekd r> dirent-name! 0 ;
-\ : delete-file ncopy 0 (rm) 0 ; ( c-addr u -- ior )
 : delete-file ( c-addr u -- ior )
  ncopy 0 [ ' (rm) ] literal catch ?dup if nip then ; 
 
 : file-position ( fileid -- ud ior ) 
-\ TODO: Count block position from `head`
+  dup ferror if 2drop 0 0 EHAND exit then
+  findex >r
+  -1 r@ f.head @ begin
+    dup r@ f.blk @ =
+  while
+    link
+    swap 1+ swap
+  repeat drop 
+  b/buf um*
+  r@ f.pos @ 0 d+ rdrop 0 ;
+: file-status ( c-addr u -- x ior )
+  
 ; 
-: file-status ; ( c-addr u -- x ior ) 
 : read-file ( c-addr u fileid -- u ior )
   \ TODO: Zero input first?
   findex dup f.flags @ flg.ren and
@@ -1200,11 +1283,11 @@ create newline 2 c, $D c, $A c, align
 : write-line ( c-addr u fileid -- ior )
   dup >r write-file ?dup if rdrop exit then
   newline count r> write-file ;  
-: refill ; ( -- flag )
+: refill query -1 ; ( -- flag )
 : reposition-file ; ( ud fileid -- ior ) 
 : resize-file ( ud fileid -- ior )
 ; 
-: require ; 
-: required ;
+: require -1 throw ; 
+: required -1 throw ;
 
 

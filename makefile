@@ -45,5 +45,8 @@ disk: subleq disk.dec
 disk.dec: subleq subleq.dec ${SRC}
 	./subleq subleq.dec $@ < ${SRC}
 
+mux: muxleq muxleq.dec ffs.fth
+	cat ffs.fth - | ./muxleq muxleq.dec
+
 clean:
 	git clean -dffx
