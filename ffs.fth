@@ -205,8 +205,17 @@
 \ (11 byte dir names...)
 \ TODO: Multiple FAT blocks
 \ TODO: better Subleq eForth mapping
-\ TODO: Add muxleq for quicker speed?
 \ TODO: Better path parsing?
+\ TODO: Mention multi-user problems
+\ TODO: Case insensitive COMPARE, SEARCH (for SUBLEQ eForth)
+\ and case insensitive SEARCH
+\ TODO: Test out of memory conditions
+\ TODO: Primitive journal? Commit changes to temp blocks and
+\ swap out?
+\ TODO: Glossary for SUBLEQ eForth as a text file
+\ TODO: Linear block allocation where possible
+\ TODO: glob/tiny regex engine (take from pickle project)
+\ TODO: Block and byte oriented files and utilities?
 \
 
 defined (order) 0= [if]
@@ -222,8 +231,6 @@ defined (order) 0= [if]
 defined eforth [if]
 system +order
 : wordlist here cell allot 0 over ! ; ( -- wid : alloc wid )
-: s" postpone $" [ ' count ] literal compile, ; immediate
-\ "
 : quine source type cr ; ' quine <ok> !
 [else]
 use ffs.fb
@@ -240,6 +247,69 @@ defined spaces 0= [if]
 : spaces begin ?dup 0> while bl emit 1- repeat ;
 [then]
 
+defined eforth [if] system +order [then]
+defined s" 0= [if]
+: s" 
+  state @ if postpone $" [ ' count ] literal compile, 
+  else 
+    [char] " parse tuck here dup >r swap cmove r> swap dup 
+    allot align
+  then ; immediate
+[then]
+
+: lower? 97 123 within ; ( ch -- f )
+: upper? 65 91 within ; ( ch -- f )
+: >lower dup upper? 32 and xor ; ( ch -- ch )
+: >upper dup lower? 32 and xor ;
+
+: icompare ( a1 u1 a2 u2 -- n : string comparison )
+  rot
+  over >lower swap >lower swap - ?dup 
+  if >r 2drop r> nip exit then
+  >r
+  begin
+    r@
+  while
+    2dup c@ >lower swap c@ >lower swap - ?dup if
+      rdrop nip nip exit
+    then
+    1+ swap 1+ swap
+    r> 1- >r
+  repeat rdrop 2drop 0 ;
+
+: prefix rot min tuck compare ; ( c1 u1 c2 u2 -- f )
+: iprefix rot min tuck icompare ; ( c1 u1 c2 u2 -- f )
+
+defined search 0= [if]
+: search ( c1 u1 c2 u2 -- c3 u3 f : find c2/u2 in c1/u1 )
+  swap >r >r 2dup
+  begin
+    dup r@ >= over 0> and
+  while
+    2dup r> r> 2dup >r >r swap prefix
+    0= if rot drop rot drop rdrop rdrop -1 exit then
+    +string
+  repeat
+  2drop rdrop rdrop 0 ;
+[then]
+
+: isearch ( c1 u1 c2 u2 -- c3 u3 f : find c2/u2 in c1/u1 )
+  swap >r >r 2dup
+  begin
+    dup r@ >= over 0> and
+  while
+    2dup r> r> 2dup >r >r swap iprefix
+    0= if rot drop rot drop rdrop rdrop -1 exit then
+    +string
+  repeat
+  2drop rdrop rdrop 0 ;
+
+\ TODO
+\ variable unix1 0 unix1 !
+\ variable unix2 0 unix2 !
+\ : time! ; ( ud -- )
+\ : time@ ; ( -- ud )
+\ : time&date ; 
 
 wordlist constant {ffs} 
 {ffs} +order definitions
@@ -264,7 +334,6 @@ dup 1+ swap constant ENDIR ( not a directory )
 dup 1+ swap constant EARGU ( invalid argument )
 dup 1+ swap constant EINTN ( internal error )
 dup 1+ swap constant EINAM ( invalid name )
-dup 1+ swap constant EHAND ( no free handles )
 dup 1+ swap constant EPERM ( permission denied )
 dup 1+ swap constant ELOCK ( could not obtain lock )
 dup 1+ swap constant ERONY ( attempt to modify read-only FS )
@@ -287,7 +356,6 @@ drop
   dup EARGU = if drop s" invalid argument" exit then
   dup EINTN = if drop s" internal error" exit then
   dup EINAM = if drop s" invalid name" exit then
-  dup EHAND = if drop s" no free handles" exit then
   dup EPERM = if drop s" permission denied" exit then
   dup ELOCK = if drop s" already locked" exit then
   dup ERONY = if drop s" read only" exit then
@@ -338,6 +406,7 @@ variable loaded 0 loaded !     \ Loaded initial program?
 variable eline 0 eline !       \ Empty link in directory
 variable exit-shell 0 exit-shell ! \ Used to exit FS shell
 variable vlock 0 vlock !       \ File System Global Lock
+variable grepl ( used to store grep length )
 
 defined eforth [if] : numberify number? ; [else]
 : numberify ( a u -- d -1 | a u 0 : easier than >number )
@@ -483,11 +552,20 @@ cell 2 = little-endian and [if]
   rdrop drop ;
 : +list block? list ; ( blk -- )
 : +load block? load ; ( blk -- )
+: bgrep ( N.B - mcopy must hold search term )
+  addr?
+  l/blk 1- for
+    dup c/blk movebuf drop grepl @ isearch nip nip if
+      dup c/blk type cr
+    then
+    c/blk +
+  next drop ;
 : link-load [ ' +load ] literal apply ; ( file -- )
 : link-list [ ' +list ] literal apply ; ( file -- )
 : link-blank [ ' bblk ] literal apply ; ( file -- )
 : link-xdump [ ' xdump ] literal apply ; ( file -- )
 : link-u [ ' u. ] literal apply ; ( file -- )
+: link-grep [ ' bgrep ] literal apply ; ( file -- )
 : more? key [ 32 invert ] literal and [char] Q = ;
 : more> cr ." --- (q)uit? --- " ;
 : moar +list more> more? ;
@@ -644,6 +722,33 @@ cell 2 = little-endian and [if]
     dup
     blk.end =
   until <> throw ;
+
+: minmax 2dup < ?exit swap ;
+: maxmin 2dup > ?exit swap ;
+
+: cmpblk
+  2dup ." BLK:" u. u. cr
+  addr? swap addr? swap
+  l/blk 1- for
+    2dup c/blk swap c/blk compare 0<> if
+      2dup
+      l/blk r@ - 1- u. ." >>> " c/blk type cr
+      l/blk r@ - 1- u. ." <<< " c/blk type cr
+    then
+    c/blk + swap c/blk + swap
+  next 2drop ;
+
+: (cmp) ( blks blks -- )
+  2dup 2dup bcount swap bcount min
+  1- for
+    2dup cmpblk
+    link swap link   
+  next 2drop
+  ( N.B. We could do better diff printing here... )
+  dup blk.end <> if ." EXTRA 2nd File: " cr dup link-list then
+  swap 
+  dup blk.end <> if ." EXTRA 1st File: " cr dup link-list then
+  2drop ;
 
 wordlist constant {edlin}
 {edlin} +order definitions
@@ -833,6 +938,11 @@ variable line 0 line !
   r> found? dirent-blk!
   [char] F found?  dirent-type!
   namebuf found? dirent-name! ;
+: cmp 
+  narg namebuf peekd dir-find dup >r 0< EFILE error
+  narg namebuf peekd dir-find dup >r 0< EFILE error
+  r> peekd swap dirent-blk@
+  r> peekd swap dirent-blk@ (cmp) ;
 : mkfile ro? full? narg 1 (mkfile) ; ( "file" -- )
 : fallocate ro? full? narg integer? (mkfile) ; ( "file" u -- )
 : fgrow ( "file" count -- )
@@ -855,6 +965,11 @@ variable line 0 line !
   #rem found? dirent-rem!
   r> found? dirent-blk! 
   [char] S found? dirent-type! ;
+\ : grep narg namebuf mcopy (file) link-grep ; ( "file" -- )
+: grep ( search file -- )
+  token count dup grepl ! mcopy
+  narg namebuf peekd dir-find dup 0< EFILE error
+  peekd swap dirent-blk@ link-grep ; 
 : rm ro? narg 0 (rm) ; ( "file" -- )
 : rmdir ro? narg 1 (rm) ; ( "dir" -- )
 : cd ( "dir" -- )
@@ -912,8 +1027,6 @@ variable line 0 line !
 
 \ : defrag ; \ compact disk
 \ : chkdsk ;
-\ : grep ; ( search file -- )
-\ : cmp ;
 \ : wc ;
 
 {edlin} +order
@@ -1182,6 +1295,7 @@ create newline 2 c, $D c, $A c, align
 : fam? dup stdio invert and 0<> throw ; ( fam -- fam )
 : bin fam? ; ( fam -- fam )
 : ferror findex f.flags @ flg.error and 0<> ; ( handle -- f )
+: feof ; \ TODO
 : fail findex f.flags flg.error swap set ; ( handle -- )
 
 : open-file ( c-addr u fam -- fileid ior ) 
@@ -1251,31 +1365,48 @@ create newline 2 c, $D c, $A c, align
   r@ f.pos @ 0 d+ rdrop 0 ;
 : file-status ( c-addr u -- x ior )
   
-; 
+;
+
+: untype ( c-addr u -- remaining ior )
+  begin
+    dup
+  while
+    over key swap c!
+    +string
+  repeat nip 0 ;
+ 
+\ : f.flags 0 cells + ; ( File Flags and Options )
+\ : f.head 1 cells + ;  ( Head Block of file )
+\ : f.end  2 cells + ;  ( Bytes in last block )
+\ : f.blk  3 cells + ;  ( Current Block Position )
+\ : f.pos  4 cells + ;  ( Position in bytes within block )
+\ : f.dline 5 cells + ; ( Directory Line of File )
+\ : f.dblk 6 cells + ;  ( Directory Block of File )
+\ 
+
+: remaining f.pos @ b/buf swap - ; ( findex -- u )
+
 : read-file ( c-addr u fileid -- u ior )
-  \ TODO: Zero input first?
+  >r 2dup erase r>
   findex dup f.flags @ flg.ren and
   0= if 2drop drop EPERM exit then
-  dup f.flags @ flg.stdin and if
-    drop 
-\    >r
-\    0 begin
-\      dup r@ <
-\    while
-\      over key swap !
-\      swap
-\    repeat
-  then
+  dup f.flags @ flg.stdin and if drop untype exit then
+  \ TODO: Read bytes in current block, advance to next block,
+  \ and ready bytes, until `u` or EOF
   -1 throw \ TODO: Implement
-;  
+  >r
+  begin
+    ?dup
+  while
+    
+  repeat
+  rdrop nip 0 ;  
 : read-line ( c-addr u fileid -- u flag ior ) 
 ; 
 : write-file ( c-addr u fileid -- ior ) 
   findex dup f.flags @ flg.wen and 
   0= if 2drop drop EPERM exit then
-  dup f.flags @ flg.stdout and if
-    drop type exit
-  then
+  dup f.flags @ flg.stdout and if drop type 0 exit then
   
   -1 throw \ TODO: Implement
 ;
@@ -1289,5 +1420,6 @@ create newline 2 c, $D c, $A c, align
 ; 
 : require -1 throw ; 
 : required -1 throw ;
+
 
 
