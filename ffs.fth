@@ -205,6 +205,8 @@
 \ (11 byte dir names...)
 \ TODO: Multiple FAT blocks
 \ TODO: better Subleq eForth mapping
+\ TODO: Rewrite utilities using the new `read-file` and
+\ `write-file` utilities.
 \ TODO: Better path parsing?
 \ TODO: Mention multi-user problems
 \ TODO: Case insensitive COMPARE, SEARCH (for SUBLEQ eForth)
@@ -304,12 +306,13 @@ defined search 0= [if]
   repeat
   2drop rdrop rdrop 0 ;
 
-\ TODO
-\ variable unix1 0 unix1 !
-\ variable unix2 0 unix2 !
-\ : time! ; ( ud -- )
-\ : time@ ; ( -- ud )
-\ : time&date ; 
+: untype ( c-addr u -- remaining ior )
+  begin
+    dup
+  while
+    over key swap c!
+    +string
+  repeat nip 0 ;
 
 wordlist constant {ffs} 
 {ffs} +order definitions
@@ -406,7 +409,7 @@ variable loaded 0 loaded !     \ Loaded initial program?
 variable eline 0 eline !       \ Empty link in directory
 variable exit-shell 0 exit-shell ! \ Used to exit FS shell
 variable vlock 0 vlock !       \ File System Global Lock
-variable grepl ( used to store grep length )
+variable grepl 0 grepl !       \ used to store grep length
 
 defined eforth [if] : numberify number? ; [else]
 : numberify ( a u -- d -1 | a u 0 : easier than >number )
@@ -965,7 +968,6 @@ variable line 0 line !
   #rem found? dirent-rem!
   r> found? dirent-blk! 
   [char] S found? dirent-type! ;
-\ : grep narg namebuf mcopy (file) link-grep ; ( "file" -- )
 : grep ( search file -- )
   token count dup grepl ! mcopy
   narg namebuf peekd dir-find dup 0< EFILE error
@@ -1046,7 +1048,7 @@ variable line 0 line !
 : sh exe ;
 : touch mkfile ;
 : type cat ;
-\ : diff cmp ;
+: diff cmp ;
 
 defined eforth [if]
  .( HERE: ) here u. cr 
@@ -1081,11 +1083,14 @@ edit help.txt
 + move files and directories into other directories, `move`
 + also handles targets "." and "..", like `cd` does.
 +
++ To execute a file type `sh <FILE>` or `exe <FILE>`.
++
 + Commands:
 +
 + cat / type <FILE>: display a file
 + cd / chdir <DIR>: change working directory to <DIR>
 + cls: clear screen
++ cmp / diff <FILE> <FILE>: compare two files
 + cp / copy <FILE1> <FILE2>: copy <FILE1> to new <FILE2>
 + deltree <FILE/DIR>: delete a file, or directory recurisvely
 + df: display file system information
@@ -1098,6 +1103,7 @@ edit help.txt
 + fsync: save any block changes
 + ftruncate <FILE> <NUM>: truncate <FILE> to <NUM> blocks
 + funlock: Display FS lock and Force unlock of file system 
++ grep <STRING> <FILE>: Search for <STRING> in <FILE>
 + halt / quit / bye: safely halt system
 + help: display a short help
 + hexdump <FILE>: hexdump a file
@@ -1236,6 +1242,7 @@ create newline 2 c, $D c, $A c, align
  8 constant flg.stdin
 16 constant flg.stdout
 32 constant flg.error \ TODO: Use this to indicate problems
+64 constant flg.eof
 
 \ Offsets into the file handle structure
 : f.flags 0 cells + ; ( File Flags and Options )
@@ -1262,6 +1269,7 @@ create newline 2 c, $D c, $A c, align
   dup flg.stdin  and [char] I flag
   dup flg.stdout and [char] O flag
   dup flg.error  and [char] ! flag
+  dup flg.eof    and [char] E flag
   drop ;
 : .fhandle ( handle -- )
   findex cr
@@ -1367,14 +1375,7 @@ create newline 2 c, $D c, $A c, align
   
 ;
 
-: untype ( c-addr u -- remaining ior )
-  begin
-    dup
-  while
-    over key swap c!
-    +string
-  repeat nip 0 ;
- 
+
 \ : f.flags 0 cells + ; ( File Flags and Options )
 \ : f.head 1 cells + ;  ( Head Block of file )
 \ : f.end  2 cells + ;  ( Bytes in last block )
@@ -1384,30 +1385,51 @@ create newline 2 c, $D c, $A c, align
 \ : f.dblk 6 cells + ;  ( Directory Block of File )
 \ 
 
+\ : remaining dup >r f.pos @ r> f.end @ swap - ; 
 : remaining f.pos @ b/buf swap - ; ( findex -- u )
+: nblock ( u findex -- f )
+  >r
+  r@ remaining + dup b/buf >= if
+    r@ f.blk @ link dup blk.end = if ( pos link )
+      2drop
+      b/buf r@ f.pos !
+      flg.eof r@ f.flags set
+      0 exit
+    then
+    r@ f.blk !
+    b/buf -
+  then
+  r> f.pos ! -1 ;
 
 : read-file ( c-addr u fileid -- u ior )
   >r 2dup erase r>
   findex dup f.flags @ flg.ren and
   0= if 2drop drop EPERM exit then
   dup f.flags @ flg.stdin and if drop untype exit then
-  \ TODO: Read bytes in current block, advance to next block,
-  \ and ready bytes, until `u` or EOF
-  -1 throw \ TODO: Implement
+  \ TODO: Get this working...
   >r
   begin
     ?dup
-  while
-    
+  while ( c-addr u )
+    r@ remaining over min ( c-addr u min )
+    r@ f.blk @ addr? ( c-addr u min baddr )
+    swap 3 pick swap >r swap r> ( c-addr u c-addr baddr min )
+    dup >r cmove r> dup r@ nblock 0= if
+      \ TODO: Calculate remaining
+      rdrop 2drop 0 0 exit
+    then
+    /string
   repeat
   rdrop nip 0 ;  
 : read-line ( c-addr u fileid -- u flag ior ) 
+  \ TODO: Block oriented I/O, handle stdin, byte oriented I/O
 ; 
 : write-file ( c-addr u fileid -- ior ) 
   findex dup f.flags @ flg.wen and 
   0= if 2drop drop EPERM exit then
   dup f.flags @ flg.stdout and if drop type 0 exit then
-  
+  \ TODO: Same as read, except f.end needs updating as well
+  \ and `modify` needs to be called
   -1 throw \ TODO: Implement
 ;
  
@@ -1415,7 +1437,9 @@ create newline 2 c, $D c, $A c, align
   dup >r write-file ?dup if rdrop exit then
   newline count r> write-file ;  
 : refill query -1 ; ( -- flag )
-: reposition-file ; ( ud fileid -- ior ) 
+: reposition-file ( ud fileid -- ior ) 
+\ TODO: Clear eof
+; 
 : resize-file ( ud fileid -- ior )
 ; 
 : require -1 throw ; 
