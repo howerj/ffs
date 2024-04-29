@@ -218,6 +218,8 @@
 \ TODO: Linear block allocation where possible
 \ TODO: glob/tiny regex engine (take from pickle project)
 \ TODO: Block and byte oriented files and utilities?
+\ TODO: CRC Utility, 16-bit CCITT 
+\
 \
 
 defined (order) 0= [if]
@@ -257,6 +259,11 @@ defined s" 0= [if]
     [char] " parse tuck here dup >r swap cmove r> swap dup 
     allot align
   then ; immediate
+[then]
+
+defined /string 0= [if] 
+: /string ( b u1 u2 -- b u : advance string u2 )
+  over min rot over + -rot - ;
 [then]
 
 : lower? 97 123 within ; ( ch -- f )
@@ -384,6 +391,9 @@ namebuf: namebuf
 namebuf: findbuf
 namebuf: compbuf
 namebuf: movebuf
+
+\ TODO: on SUBLEQ eForth keep `copy-store` at fixed memory
+\ location, prior to block buffer
 create copy-store 1024 allot
 32 constant dirsz              \ Length of directory entry
 create dirent-store dirsz allot
@@ -392,19 +402,22 @@ variable read-only 0 read-only !  \ Make file system read only
 $0100 constant version \ File System version
 
 defined eforth [if]
-variable start 65 start !      \ Starting block
-variable end   126 end !       \ End block
+variable start 0 start !        \ Starting block
+variable end   126 end !        \ End block
+65 constant init                \ Initial program block
+66 constant fat                 \ FAT Block
+67 constant dirstart            \ Top level directory
 [else]
 variable start 1 start !       \ Starting block
 variable end   128 end !       \ End block
-[then]
-2 constant dsl                 \ Directory Start Line
 0 constant init                \ Initial program block
 1 constant fat                 \ FAT Block
 2 constant dirstart            \ Top level directory
+[then]
+2 constant dsl                 \ Directory Start Line
 16 constant l/blk              \ Lines per block
-64 constant c/blk              \ Columns per block
-32 constant d/blk              \ Directories per block
+b/buf l/blk / constant c/blk   \ Columns per block
+b/buf dirsz / constant d/blk   \ Directories per block
 variable loaded 0 loaded !     \ Loaded initial program?
 variable eline 0 eline !       \ Empty link in directory
 variable exit-shell 0 exit-shell ! \ Used to exit FS shell
@@ -443,6 +456,8 @@ defined eforth [if] : numberify number? ; [else]
 : save read-only @ 0= if update save-buffers then ;
 : block? ( blk -- blk )
   start @ + dup start @ end @ 1+ within 0= EIBLK error ;
+\ TODO: Trap on bad blocks, mark bad blocks, complete fail if
+\ FAT block cannot be read/wrote.
 : addr? block? block ; ( blk -- addr )
 : eline? eline @ ;
 : little-endian base c@ 0<> ; 
@@ -468,32 +483,18 @@ cell 2 = little-endian and [if]
     dup blk.end =
   until drop ;
 : reserve 2* fat addr? + 16! modify ; ( blk blk -- )
+: setrange ( val blk u )
+  rot >r
+  begin
+    ?dup
+  while
+    over r@ swap reserve
+    +string
+  repeat drop rdrop ;
 : btotal end @ start @ - ; ( -- n )
 : bcheck btotal 4 < -1 and throw ;
-: fmt.init
-  init addr? b/buf blank
-  s" .( HOWERJ SIMPLE FORTH FILE SYSTEM ) cr 1 loaded ! " 
-  init addr? swap cmove save ;
-: fmt.fat
-  fat addr? b/buf erase
-  0 b/buf 2/ 1- for blk.unmapped over reserve 1+ next drop
-  blk.special init reserve
-  blk.special fat reserve
-  blk.special dirstart reserve
-  dirstart 1+
-  begin
-    end @ start @ - over >
-  while
-    blk.free over reserve 1+
-  repeat
-  drop
-  save ;
 : bblk addr? b/buf blank save ; ( blk -- )
 : fblk addr? b/buf erase save ; ( blk -- )
-: fmt.blks
-  dirstart end @ dirstart - start @ - 1- for
-    dup fblk 1+
-  next drop ;
 : free? ( -- blk f )
   fat addr? 0
   begin
@@ -543,6 +544,30 @@ cell 2 = little-endian and [if]
     else over dup 1+ swap then reserve 
     1- swap 1+ swap
   repeat drop save ;
+: fmt.init
+\  init if 0 init 1- reserve-range then
+\  blk.special 0 init setrange
+  init addr? b/buf blank
+  s" .( HOWERJ SIMPLE FORTH FILE SYSTEM ) cr 1 loaded ! " 
+  init addr? swap cmove save ;
+: fmt.fat
+  fat addr? b/buf erase
+  0 b/buf 2/ 1- for blk.unmapped over reserve 1+ next drop
+  blk.special init reserve
+  blk.special fat reserve
+  blk.special dirstart reserve
+  dirstart 1+
+  begin
+    end @ start @ - over >
+  while
+    blk.free over reserve 1+
+  repeat
+  drop
+  save ;
+: fmt.blks
+  dirstart end @ dirstart - start @ - 1- for
+    dup fblk 1+
+  next drop ;
 : xdump ( blk -- )
   base @ >r hex addr? cr
   c/blk 1- for
@@ -628,6 +653,8 @@ cell 2 = little-endian and [if]
   dup 47 = if drop 0 exit then
   32 127 within ;
 : nvalid? ( c-addr u -- f )
+  ?dup 0= if drop 0 exit then
+\ over c@ 32 <= if 2drop 0 exit then \ Should check all leading
   2dup s" ." ccopy compbuf compare 0= if 2drop 0 exit then
   2dup s" .." ccopy compbuf compare 0= if 2drop 0 exit then
   begin
@@ -807,8 +834,9 @@ variable line 0 line !
     2dup special? if
       2dup dirent-blk@ ." *" u. 
     else
-      2dup dirent-blk@ bcount u.
-      \ TODO: Display remaining as well?
+      ( previously just `2dup dirent-blk@ bcount u.` )
+      2dup dirent-blk@ bcount 1- >r
+      2dup dirent-rem@ 0 r> b/buf um* d+ du.
     then
     cr
     1+
@@ -1061,8 +1089,8 @@ defined eforth [if]
 mount loaded @ 0= [if]
 cr .( FFS NOT PRESENT, FORMATTING... ) cr
 fdisk
-mknod [BOOT] 0
-mknod [FAT] 1
+\ mknod [BOOT] 0
+\ mknod [FAT] 1
 cd ..
 edit help.txt
 + FORTH FILE SYSTEM HELP AND COMMANDS
@@ -1110,7 +1138,7 @@ edit help.txt
 + ls / dir : list directory
 + melt: Unfreeze file system - Turn off read only mode
 + mkdir <DIR>: make a directory
-+ mknode <FILE> <NUM>: make a special <FILE> with <NUM>
++ mknod <FILE> <NUM>: make a special <FILE> with <NUM>
 + more <FILE>: display a file, pause for each block
 + mount: attempt file system mounting
 + move <FILE> <FILE/DIR>: move into directory or rename file
@@ -1189,6 +1217,19 @@ mkdir bin
 .( DONE ) cr
 [then]
 
+\ TODO: Fix this for SUBLEQ eForth, make file for SUBLEQ
+\ eForth code
+defined eforth [if]
+mknod [BOOT] 65
+mknod [FAT] 66
+[then]
+
+loaded @ 0= defined eforth 0= and [if]
+mknod [BOOT] 0
+mknod [FAT] 1
+[then]
+
+
 forth-wordlist +order definitions
 : dos ( only ) {dos} +order {ffs} +order mount {ffs} -order ;
 
@@ -1223,9 +1264,6 @@ defined eforth 0= [if]
 \ "trylock", to prevent invalid operations, add Error Code.
 \ Files could be locked by replacing their type with the lower
 \ case equivalent
-\ TODO: Better name checking on "create-file", we should not
-\ be able to create files with preceding whitespace for
-\ example.
 \
 
 
@@ -1328,9 +1366,9 @@ create newline 2 c, $D c, $A c, align
   peekd over dirent-rem@ r@ f.end !
   peekd over dirent-blk@ dup r@ f.blk ! r@ f.head !
   drop rdrop r> 0 ; 
-\ TODO: Better iors 
 : create-file ( c-addr u fam -- fileid ior )
-  fam? >r 2dup ncopy full? 1 (mkfile) save
+  fam? >r 2dup ncopy full? 1 [ ' (mkfile) ] literal catch
+  ?dup if nip nip nip -1 swap rdrop exit then save
   r> open-file ; 
 : flush-file ( fileid -- ior )  
   dup ferror if 2drop EHAND exit then
@@ -1444,6 +1482,7 @@ create newline 2 c, $D c, $A c, align
 ; 
 : require -1 throw ; 
 : required -1 throw ;
+
 
 
 
