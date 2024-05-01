@@ -383,6 +383,8 @@ variable error-level 0 error-level !
 : elucidate dup error-level ! ?dup if cr e>s type ." ?" then ;
 : error swap if dup elucidate throw then drop ; ( f code -- )
 
+\ TODO: Change variables to use higher values, change 
+\ `linkable`...
 $0000 constant blk.end      \ End of FAT chain
 $FFFC constant blk.unmapped \ Unmapped / Not memory
 $FFFD constant blk.bad-blk  \ Block is bad
@@ -559,10 +561,10 @@ cell 2 = little-endian and [if]
   s" .( HOWERJ SIMPLE FORTH FILE SYSTEM / DOS ) cr 1 loaded !" 
   init addr? swap cmove save ;
 : fmt.fat
-\  init if 0 init 1- reserve-range then
-\  blk.special 0 init setrange
   fat addr? b/buf erase
   0 b/buf 2/ 1- for blk.unmapped over reserve 1+ next drop
+  init if 0 init 1- reserve-range then
+\  blk.special 0 init setrange
   blk.special init reserve
   blk.special fat reserve
   blk.special dirstart reserve
@@ -613,7 +615,8 @@ cell 2 = little-endian and [if]
   until drop cr ." EOF" ; 
 : fat-end ( blk -- blk : last block in FAT chain )
   begin dup link blk.end = if exit then link again ;
-
+: resolve ; \ TODO: Turn name into dir/line
+: gc ; \ TODO: Copy FAT nodes
 \ N.B. `fat-append` does not set the appended block to
 \ `blk.end`, `balloc` does however. This is so another linked
 \ list can be appended. It could set it intelligently 
@@ -1304,7 +1307,7 @@ create newline 2 c, $D c, $A c, align
   dup flg.eof    and [char] E flag
   drop ;
 : .fhandle ( handle -- )
-  findex cr
+  cr
   dup f.flags @ ." FLG: " dup u. ." -> " .flag cr
   dup f.head  @ ." HED: " u. cr
   dup f.end   @ ." END: " u. cr
@@ -1313,6 +1316,7 @@ create newline 2 c, $D c, $A c, align
   dup f.dline @ ." DLN: " u. cr
   dup f.dblk  @ ." DBK: " u. cr
   drop ;
+: .fihandle findex .fhandle ;
 
 : unused? ( -- ptr f : find a free handle if one exists )
   0
@@ -1421,52 +1425,69 @@ create newline 2 c, $D c, $A c, align
 \ : f.dline 5 cells + ; ( Directory Line of File )
 \ : f.dblk 6 cells + ;  ( Directory Block of File )
 
-\ : remaining dup >r f.pos @ r> f.end @ swap - ; 
-: remaining f.pos @ b/buf swap - ; ( findex -- u )
+\ TODO: Assert f.end/f.pos, make assertions for file handle
+: nlast? f.blk @ link blk.end = ;
+: limit? dup nlast? if f.end @ exit then drop b/buf ;
+: remaining dup >r f.pos @ r> limit? swap - ;
 : nblock ( u findex -- f )
-  >r
-  r@ remaining + dup b/buf >= if
-    r@ f.blk @ link dup blk.end = if ( pos link )
-      2drop
-      b/buf r@ f.pos !
+  >r r@ f.pos +!
+  r@ f.pos @ r@ limit? >= if
+    r@ nlast? if
       flg.eof r@ f.flags set
-      0 exit
+      rdrop 0 exit
     then
-    r@ f.blk !
-    b/buf -
+    r@ limit? r@ f.pos @ swap - r@ f.pos !
+    r@ f.blk @ link r@ f.blk !
   then
-  r> f.pos ! -1 ;
-
+  rdrop -1 ;
 : read-file ( c-addr u fileid -- u ior )
   over >r >r 2dup erase r>
   findex dup f.flags @ flg.ren and
-  0= if rdrop 2drop drop EPERM exit then
+  0= if rdrop 2drop drop 0 EPERM exit then
   dup f.flags @ flg.stdin and if rdrop drop untype exit then
   >r
   begin
     ?dup
   while ( c-addr u )
     r@ remaining over min ( c-addr u min )
-    r@ f.blk @ addr? ( c-addr u min baddr )
-    swap 3 pick swap ( c-addr u c-addr baddr min )
-    dup >r cmove r> dup r@ nblock 0= if
-      rdrop nip r> - 0 exit
+    r@ f.blk @ addr? r@ f.pos @ + ( c-addr u min baddr )
+    swap ( c-addr u baddr min ) 3 pick swap
+    dup >r cmove r>
+    dup r@ nblock
+    0= if 
+      \ TODO: Test this is correct
+      rdrop nip r> min 0 exit
     then
     /string
   repeat
   rdrop drop r> 0 ;
+
 : read-line ( c-addr u fileid -- u flag ior ) 
   \ TODO: Block oriented I/O, handle stdin, byte oriented I/O
 ; 
 : write-file ( c-addr u fileid -- ior ) 
+  over >r
   findex dup f.flags @ flg.wen and 
-  0= if 2drop drop EPERM exit then
-  dup f.flags @ flg.stdout and if drop type 0 exit then
-  \ TODO: Same as read, except f.end needs updating as well
-  \ and `modify` needs to be called
-  -1 throw \ TODO: Implement
-;
- 
+  0= if rdrop 2drop drop EPERM exit then
+  dup f.flags @ flg.stdout and if rdrop drop type 0 exit then
+    >r
+  begin
+    ?dup
+  while ( c-addr u )
+  \ TODO: Grow file, into last block or add new block, write
+  \ back dir-rem with flush...
+    r@ remaining over min ( c-addr u min )
+    r@ f.blk @ addr? r@ f.pos @ + ( c-addr u min baddr )
+    swap ( c-addr u baddr min ) 3 pick swap >r swap r>
+    dup >r cmove modify r> 
+    dup r@ nblock
+    0= if 
+      rdrop nip r> min 0 exit
+    then
+    /string
+  repeat
+  rdrop drop r> 0 ;
+
 : write-line ( c-addr u fileid -- ior )
   dup >r write-file ?dup if rdrop exit then
   newline count r> write-file ;  
@@ -1489,7 +1510,6 @@ dup constant stdout
 dup constant stderr
 drop
 
-\ TODO: Implement new version of `cat`, testing
 \ TODO: Move this test code to `t`
 
 create buf1 b/buf allot buf1 b/buf erase
@@ -1500,12 +1520,12 @@ s" help.txt" r/w open-file throw handle !
   r/o open-file throw
   >r
   begin
-    buf1 b/buf r@ read-file 
+    buf1 c/blk r@ read-file
     ?dup if r> close-file drop throw then
     ?dup
   while
-    buf1 swap type
-  repeat r> close-file throw ;
+    buf1 swap type cr
+  repeat r> close-file throw 2drop ;
 
 buf1 b/buf handle @ read-file throw ." READ: " u. cr
 .( === READ IN === ) cr
@@ -1517,6 +1537,7 @@ buf1 b/buf type cr
 .( === READ IN === ) cr
 
 handle @ close-file throw
-[then]
 
+s" help.txt" ncat
+[then]
 
