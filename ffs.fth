@@ -211,7 +211,7 @@
 \ TODO: 16 byte directory entires, for 64 entries per dir
 \ (11 byte dir names...)
 \ TODO: Multiple FAT blocks
-\ TODO: better Subleq eForth mapping
+\ TODO: Better Subleq eForth mapping
 \ TODO: Rewrite utilities using the new `read-file` and
 \ `write-file` utilities.
 \ TODO: Better path parsing?
@@ -383,8 +383,6 @@ variable error-level 0 error-level !
 : elucidate dup error-level ! ?dup if cr e>s type ." ?" then ;
 : error swap if dup elucidate throw then drop ; ( f code -- )
 
-\ TODO: Change variables to use higher values, change 
-\ `linkable`...
 $0000 constant blk.end      \ End of FAT chain
 $FFFC constant blk.unmapped \ Unmapped / Not memory
 $FFFD constant blk.bad-blk  \ Block is bad
@@ -401,27 +399,26 @@ namebuf: findbuf
 namebuf: compbuf
 namebuf: movebuf
 
-\ TODO: on SUBLEQ eForth keep `copy-store` at fixed memory
-\ location, prior to block buffer
-create copy-store 1024 allot
-32 constant dirsz              \ Length of directory entry
+32 constant dirsz                \ Length of directory entry
 create dirent-store dirsz allot
-variable dirp 0 dirp ! \ Directory Pointer
-variable read-only 0 read-only !  \ Make file system read only 
-$0100 constant version \ File System version
+variable dirp 0 dirp !           \ Directory Pointer
+variable read-only 0 read-only ! \ Make file system read only 
+$0100 constant version           \ File System version
 
 defined eforth [if]
-variable start 0 start !        \ Starting block
-variable end   126 end !        \ End block
-65 constant init                \ Initial program block
-66 constant fat                 \ FAT Block
-67 constant dirstart            \ Top level directory
+variable start 0 start !       \ Starting block
+variable end   126 end !       \ End block
+65 constant init               \ Initial program block
+66 constant fat                \ FAT Block
+67 constant dirstart           \ Top level directory
+$F000 constant copy-store      \ Used to copy blocks
 [else]
 variable start 1 start !       \ Starting block
 variable end   128 end !       \ End block
 0 constant init                \ Initial program block
 1 constant fat                 \ FAT Block
 2 constant dirstart            \ Top level directory
+create copy-store 1024 allot   \ Used to copy blocks
 [then]
 2 constant dsl                 \ Directory Start Line
 16 constant l/blk              \ Lines per block
@@ -430,7 +427,6 @@ b/buf dirsz / constant d/blk   \ Directories per block
 variable loaded 0 loaded !     \ Loaded initial program?
 variable eline 0 eline !       \ Empty link in directory
 variable exit-shell 0 exit-shell ! \ Used to exit FS shell
-variable vlock 0 vlock !       \ File System Global Lock
 variable grepl 0 grepl !       \ used to store grep length
 variable insensitive 0 insensitive ! \ Case insensitivity
 
@@ -454,9 +450,6 @@ defined eforth [if] : numberify number? ; [else]
 
 : equate insensitive @ if icompare exit then compare ;
 : examine insensitive @ if isearch exit then search ;
-: lock? vlock @ 0<> ; ( -- f : is locked? )
-: lock lock? ELOCK error 1 vlock ! ; ( -- )
-: unlock 0 vlock ! ; ( -- )
 : ro? read-only @ 0<> ERONY error ; ( -- f )
 : nul? count nip 0= ; ( a -- f : is counted word empty? )
 : token bl word dup nul? EARGU error ; ( -- b )
@@ -480,6 +473,7 @@ cell 2 = little-endian and [if]
 : 16! ro? 2dup c! swap 8 rshift swap 1+ c! modify ;
 : 16@ dup c@ swap 1+ c@ 8 lshift or ;
 [then]
+\ : linkable dup 0 end @ 1+ within ; ( blk -- blk f )
 : linkable dup dirstart 1+ end @ 1+ within ; ( blk -- blk f )
 : link ( blk -- blk : load next block from FAT )
   linkable 0= if drop blk.end exit then
@@ -705,6 +699,7 @@ cell 2 = little-endian and [if]
   #rem r@ 0 dirent-rem!
   r@ r> 0 dirent-blk! 
   save ;
+\ TODO: Prevent finding special dirs, empty file of all spaces
 : dir-find ( c-addr u blk -- line | -1 )
   >r fcopy
   dsl ( skip first line at zero, this contains directory info )
@@ -899,7 +894,6 @@ variable line 0 line !
    ." MOUNTED" cr
    ." BLK SZ:      " b/buf u. cr
    ." READ ONLY?   " read-only @ yes? type cr
-   ." LOCKED?      " vlock @ yes? type cr
    ." START BLK:   " start @ u. cr
    ." INSENSITIVE: " insensitive @ yes? type cr
    ." END BLK:     " end @ u. cr
@@ -916,7 +910,6 @@ variable line 0 line !
 : mount init block? load 0 dirp ! dirstart pushd ;
 : freeze 1 read-only ! ;
 : melt 0 read-only ! ;
-: funlock ." LOCKED? " vlock @ yes? type cr unlock ;
 : fdisk melt bcheck fmt.init fmt.fat fmt.blks fmt.root mount ; 
 : rename ( "file" "file" -- )
   ro?
@@ -1253,14 +1246,11 @@ defined eforth 0= [if]
 \ DIR-LINE: 16/cell
 \ DIR-BLK:  16/cell
 \
-\ TODO: trap block for ior and for bad-blocks
-\ TODO: Wrap File System functions and trap, returning IOR
 \ TODO: Optionally allow directories to be opened up
+\ TODO: Open memory as a file.
 \ TODO: Handle deletion of open files?
-\ TODO: Lock file system or directories, with "lock", "unlock",
-\ "trylock", to prevent invalid operations, add Error Code.
-\ Files could be locked by replacing their type with the lower
-\ case equivalent
+\ Note: Locking files does not need to be done if all 
+\ operations are atomic (write-file should flush).
 \
 
 
@@ -1268,16 +1258,18 @@ defined eforth 0= [if]
 7 cells constant fhandle-size
 create fhandles fhandle-size fopen-max * dup cells allot 
        fhandles swap erase
+create reqbuf maxname 1+ allot \ File name as a counted string
 
 create newline 2 c, $D c, $A c, align
 
- 1 constant flg.used
- 2 constant flg.ren
- 4 constant flg.wen
- 8 constant flg.stdin
-16 constant flg.stdout
-32 constant flg.error \ TODO: Use this to indicate problems
-64 constant flg.eof
+  1 constant flg.used
+  2 constant flg.ren
+  4 constant flg.wen
+  8 constant flg.stdin
+ 16 constant flg.stdout
+ 32 constant flg.error \ TODO: Use this to indicate problems
+ 64 constant flg.eof
+128 constant flg.mem \ Reserved for memory mapped files
 
 \ Offsets into the file handle structure
 : f.flags 0 cells + ; ( File Flags and Options )
@@ -1306,7 +1298,7 @@ create newline 2 c, $D c, $A c, align
   dup flg.error  and [char] ! flag
   dup flg.eof    and [char] E flag
   drop ;
-: .fhandle ( handle -- )
+: .fhandle ( findex -- )
   cr
   dup f.flags @ ." FLG: " dup u. ." -> " .flag cr
   dup f.head  @ ." HED: " u. cr
@@ -1316,7 +1308,19 @@ create newline 2 c, $D c, $A c, align
   dup f.dline @ ." DLN: " u. cr
   dup f.dblk  @ ." DBK: " u. cr
   drop ;
-: .fihandle findex .fhandle ;
+
+wordlist constant {required}
+
+defined holds 0= [if]
+: holds begin dup while 1- 2dup + c@ hold repeat 2drop ;
+[then]
+: entry ( cs -- f )
+  dup >r find nip ?dup if rdrop exit then
+  <# r> count holds s" create  " holds 0 0 #> evaluate 0 ;
+: .require get-order {required} 1 set-order words set-order ;
+: required?
+  >r get-order {required} +order definitions r> entry >r
+  set-order definitions r> ;
 
 : unused? ( -- ptr f : find a free handle if one exists )
   0
@@ -1342,6 +1346,17 @@ create newline 2 c, $D c, $A c, align
 : fopened? findex f.flags @ flg.used and 0<> ; ( handle -- f )
 : feof? findex f.flags @ flg.eof and 0<> ; ( handle -- f )
 : fail findex f.flags flg.error swap set ; ( handle -- )
+\ : fassert >r ( fhandle -- )
+\  r@ fopened? 0= and throw
+\  r@ findex f.pos @ r@ findex f.end @ >= and throw
+\  rdrop ;
+
+
+: pack ( c-addr u )
+  reqbuf maxname 1+ blank
+  nlen?
+  dup reqbuf c!
+  reqbuf 1+ swap cmove ;
 
 : open-file ( c-addr u fam -- fileid ior ) 
   fam?
@@ -1370,6 +1385,7 @@ create newline 2 c, $D c, $A c, align
   ?dup if nip nip nip -1 swap rdrop exit then save
   r> open-file ; 
 : flush-file ( fileid -- ior )
+  save
   dup ferror if 2drop EHAND exit then
   findex >r
   r@ f.flags @ flg.used and 0= if rdrop EHAND exit then
@@ -1391,10 +1407,16 @@ create newline 2 c, $D c, $A c, align
   dup f.flags @ flg.ren and 0= EPERM error
   dup f.flags @ flg.stdin and 0<> EPERM error
   f.head @ link-load ; 
-: include exe ; ( "file" -- )
 : included ( c-addr u -- )
   ncopy namebuf peekd dir-find dup 0< EFILE error
   peekd swap dirent-blk@ link-load ; 
+: include exe ; ( "file" -- )
+: required ( c-addr u -- )
+  pack reqbuf dup count mcopy required? ?exit reqbuf count
+  included ;
+: require ( "name" -- )
+  token dup count mcopy
+  required? ?exit movebuf included ;
 : rename-file ( c-addr1 u1 c-addr2 u2 -- ior ) 
   mcopy ncopy
   namebuf peekd dir-find dup >r 0< if rdrop EFILE exit then
@@ -1405,10 +1427,10 @@ create newline 2 c, $D c, $A c, align
 : file-position ( fileid -- ud ior ) 
   dup ferror if 2drop 0 0 EHAND exit then
   findex >r
-  -1 r@ f.head @ begin
-    dup r@ f.blk @ =
+  0 r@ f.head @ begin
+    dup r@ f.blk @ <>
   while
-    link
+    link dup blk.end = if 2drop rdrop 0 0 EHAND exit then
     swap 1+ swap
   repeat drop 
   b/buf um*
@@ -1417,15 +1439,6 @@ create newline 2 c, $D c, $A c, align
   r/o open-file ?dup if exit then
   close-file 0 swap ;
 
-\ : f.flags 0 cells + ; ( File Flags and Options )
-\ : f.head 1 cells + ;  ( Head Block of file )
-\ : f.end  2 cells + ;  ( Bytes in last block )
-\ : f.blk  3 cells + ;  ( Current Block Position )
-\ : f.pos  4 cells + ;  ( Position in bytes within block )
-\ : f.dline 5 cells + ; ( Directory Line of File )
-\ : f.dblk 6 cells + ;  ( Directory Block of File )
-
-\ TODO: Assert f.end/f.pos, make assertions for file handle
 : nlast? f.blk @ link blk.end = ;
 : limit? dup nlast? if f.end @ exit then drop b/buf ;
 : remaining dup >r f.pos @ r> limit? swap - ;
@@ -1465,6 +1478,12 @@ create newline 2 c, $D c, $A c, align
 : read-line ( c-addr u fileid -- u flag ior ) 
   \ TODO: Block oriented I/O, handle stdin, byte oriented I/O
 ; 
+
+\ : n 0 line ! s vista @ link blk.end = if 
+\    balloc dup bblk head @ fat-append 
+\  then
+\  vista @ link vista ! l ;
+
 : write-file ( c-addr u fileid -- ior ) 
   over >r
   findex dup f.flags @ flg.wen and 
@@ -1498,9 +1517,8 @@ create newline 2 c, $D c, $A c, align
 ; 
 : resize-file ( ud fileid -- ior )
   -1 throw
-; 
-: require -1 throw ; 
-: required -1 throw ;
+;
+
 
 defined eforth 0= [if]
 \ File Words Test
@@ -1527,17 +1545,22 @@ s" help.txt" r/w open-file throw handle !
     buf1 swap type cr
   repeat r> close-file throw 2drop ;
 
-buf1 b/buf handle @ read-file throw ." READ: " u. cr
+: .pos handle @ ." POS: " file-position throw ud. cr ;
+
+s" help.txt" ncat
+
+.pos
+buf1 b/buf handle @ read-file throw ." READ: " u. cr .pos
 .( === READ IN === ) cr
 buf1 b/buf type cr
 .( === READ IN === ) cr
-buf1 b/buf handle @ read-file throw ." READ: " u. cr
+buf1 b/buf handle @ read-file throw ." READ: " u. cr .pos
 .( === READ IN === ) cr
 buf1 b/buf type cr
 .( === READ IN === ) cr
 
 handle @ close-file throw
-
-s" help.txt" ncat
 [then]
 
+dos
+{ffs} +order
