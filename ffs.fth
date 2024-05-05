@@ -223,7 +223,10 @@
 \ TODO: glob/tiny regex engine (take from pickle project)
 \ TODO: Block and byte oriented files and utilities?
 \ TODO: CRC Utility, 16-bit CCITT 
-\
+\ TODO: Time functionality
+\ TODO: Lock directories by searching all open file handles,
+\ do this to prevent deletions, renaming, and moving files
+\ in that directory.
 \
 
 defined (order) 0= [if]
@@ -328,12 +331,23 @@ defined search 0= [if]
     +string
   repeat nip 0 ;
 
+defined b/buf 0= [if] 1024 constant b/buf [then]
+defined d>s 0= [if] : d>s drop ; [then]
+
+defined eforth [if]
+: defer! >body ! ;
+: defer@ >body @ ;
+: ['] ' postpone literal ; immediate compile-only
+: defer
+  create [ ' abort ] literal ,
+  does> @ execute ;
+: is state @ if postpone ['] postpone defer! exit then ' defer! 
+  ; immediate
+[then]
+
 wordlist constant {ffs} 
 {ffs} +order definitions
 wordlist constant {dos}
-
-defined b/buf 0= [if] 1024 constant b/buf [then]
-defined d>s 0= [if] : d>s drop ; [then]
 
 128
 dup 1+ swap constant EUNKN ( unknown error )
@@ -430,6 +444,13 @@ variable exit-shell 0 exit-shell ! \ Used to exit FS shell
 variable grepl 0 grepl !       \ used to store grep length
 variable insensitive 0 insensitive ! \ Case insensitivity
 
+8 constant fopen-max
+7 cells constant fhandle-size
+create fhandles fhandle-size fopen-max * dup cells allot 
+       fhandles swap erase
+create reqbuf maxname 1+ allot \ File name as a counted string
+create newline 2 c, $D c, $A c, align
+
 defined eforth [if] : numberify number? ; [else]
 : numberify ( a u -- d -1 | a u 0 : easier than >number )
   -1 dpl !
@@ -502,7 +523,7 @@ cell 2 = little-endian and [if]
 : bblk addr? b/buf blank save ; ( blk -- )
 : fblk addr? b/buf erase save ; ( blk -- )
 : free? ( -- blk f )
-  fat addr? 0
+  fat addr? init
   begin
     dup end @ <
   while
@@ -1095,6 +1116,7 @@ defined eforth 0= ?\ mknod [BOOT] 0
 defined eforth 0= ?\ mknod [FAT] 1
 defined eforth    ?\ mknod [BOOT] 65
 defined eforth    ?\ mknod [FAT] 66
+defined eforth    ?\ mknod [KERNEL] 0
 edit help.txt
 + FORTH FILE SYSTEM HELP AND COMMANDS
 +
@@ -1254,14 +1276,6 @@ defined eforth 0= [if]
 \
 
 
-8 constant fopen-max
-7 cells constant fhandle-size
-create fhandles fhandle-size fopen-max * dup cells allot 
-       fhandles swap erase
-create reqbuf maxname 1+ allot \ File name as a counted string
-
-create newline 2 c, $D c, $A c, align
-
   1 constant flg.used
   2 constant flg.ren
   4 constant flg.wen
@@ -1389,8 +1403,6 @@ defined holds 0= [if]
   dup ferror if 2drop EHAND exit then
   findex >r
   r@ f.flags @ flg.used and 0= if rdrop EHAND exit then
-  \ TODO: This might not be needed...this also requires locking
-  \ this file...
   r@ f.end @ r@ f.dblk @ r@ f.dline @ dirent-rem!
   rdrop 0 ;
 : close-file ( fileid -- ior )
@@ -1479,11 +1491,6 @@ defined holds 0= [if]
   \ TODO: Block oriented I/O, handle stdin, byte oriented I/O
 ; 
 
-\ : n 0 line ! s vista @ link blk.end = if 
-\    balloc dup bblk head @ fat-append 
-\  then
-\  vista @ link vista ! l ;
-
 : write-file ( c-addr u fileid -- ior ) 
   over >r
   findex dup f.flags @ flg.wen and 
@@ -1493,16 +1500,21 @@ defined holds 0= [if]
   begin
     ?dup
   while ( c-addr u )
-  \ TODO: Grow file, into last block or add new block, write
-  \ back dir-rem with flush...
+    \ TODO: Update `f.end` (max f.pos f.end)
+    r@ nlast? if
+      
+    then
+
     r@ remaining over min ( c-addr u min )
     r@ f.blk @ addr? r@ f.pos @ + ( c-addr u min baddr )
-    swap ( c-addr u baddr min ) 3 pick swap >r swap r>
-    dup >r cmove modify r> 
+    swap ( c-addr u baddr min ) 3 pick swap
+    >r swap r> dup >r cmove modify r>
     dup r@ nblock
     0= if 
-      rdrop nip r> min 0 exit
+      \ TODO: Allocate block
+      balloc r@ f.blk @ fat-append
     then
+    r@ flush-file throw
     /string
   repeat
   rdrop drop r> 0 ;
@@ -1511,18 +1523,26 @@ defined holds 0= [if]
   dup >r write-file ?dup if rdrop exit then
   newline count r> write-file ;  
 : reposition-file ( ud fileid -- ior ) 
-  findex dup f.flags flg.eof swap clear
+  findex dup >r f.flags flg.eof swap clear
+  um/mod
 
   -1 throw
 ; 
 : resize-file ( ud fileid -- ior )
-  -1 throw
+  \ This needs to allocate, do nothing, or free, depending
+  \ on the situation.
+  drop 2drop -1
 ;
-
 
 defined eforth 0= [if]
 \ File Words Test
 s" ." r/w open-file throw ( open special file '.' )
+\ TODO: Read/Write from `xt` and parameter.
+\ A way of reading from a random source would be neat, as well
+\ as an equivalent of /dev/null. This could be handled more
+\ generally by allowing reading and writing from and to a
+\ a callback that could provide that functionality instead of
+\ special casing things.
 dup constant stdin
 dup constant stdout
 dup constant stderr
