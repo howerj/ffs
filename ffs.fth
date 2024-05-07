@@ -334,17 +334,6 @@ defined search 0= [if]
 defined b/buf 0= [if] 1024 constant b/buf [then]
 defined d>s 0= [if] : d>s drop ; [then]
 
-defined eforth [if]
-: defer! >body ! ;
-: defer@ >body @ ;
-: ['] ' postpone literal ; immediate compile-only
-: defer
-  create [ ' abort ] literal ,
-  does> @ execute ;
-: is state @ if postpone ['] postpone defer! exit then ' defer! 
-  ; immediate
-[then]
-
 wordlist constant {ffs} 
 {ffs} +order definitions
 wordlist constant {dos}
@@ -615,6 +604,26 @@ cell 2 = little-endian and [if]
     then
     c/blk +
   next drop ;
+( Make a word to limit arithmetic to a 16-bit value )
+cell 2 = [if] 
+: limit immediate ;  [else] : limit $FFFF and ; [then]
+
+: ccitt ( crc c-addr -- crc : Poly. 0x1021 AKA "x16+x12+x5+1" )
+  c@                         ( get char )
+  limit over 8 rshift xor    ( crc x )
+  dup  4  rshift xor         ( crc x )
+  dup  5  lshift limit xor   ( crc x )
+  dup  12 lshift limit xor   ( crc x )
+  swap 8  lshift limit xor ; ( crc )
+
+\ http://stackoverflow.com/questions/10564491
+\ https://www.lammertbies.nl/comm/info/crc-calculation.html
+
+: crc ( c-addr u -- ccitt : 16 bit CCITT CRC )
+  $FFFF -rot
+  begin ?dup while >r tuck ccitt swap r> +string repeat drop ;
+
+
 : link-load [ ' +load ] literal apply ; ( file -- )
 : link-list [ ' +list ] literal apply ; ( file -- )
 : link-blank [ ' bblk ] literal apply ; ( file -- )
@@ -1585,115 +1594,14 @@ handle @ close-file throw
 dos
 {ffs} +order
 
-( Make a word to limit arithmetic to a 16-bit value )
-cell 2 = [if]
-  : limit immediate ;  ( do nothing, no need to limit )
-[else]
-  : limit 0xffff and ; ( limit to 16-bit value )
-[then]
-
 0 [if]
 
-\ ==================== Matcher ===============================
-\ ( The following section implements a very simple regular
-\ expression engine, which expects an ASCIIZ Forth string. It
-\ is translated from C code and performs an identical function.
-\ 
-\ The regular expression language is as follows:
-\ 
-\ 	c	match a literal character
-\ 	.	match any character
-\ 	*	match any characters
-\ 
-\ The "*" operator performs the same function as ".*" does in
-\ most other regular expression engines. Most other regular
-\ expression engines also do not anchor their selections to the
-\ beginning and the end of the string to match, instead using
-\ the operators '^' and '$' to do so, to emulate this behavior
-\ '*' can be added as either a suffix, or a prefix, or both,
-\ to the matching expression.
-\ 
-\ As an example "*, World!" matches both "Hello, World!" and
-\ "Good bye, cruel World!". "Hello, ...." matches "Hello, Bill"
-\ and "Hello, Fred" but not "Hello, Tim" as there are two few
-\ characters in the last string. )
-\ 
-\ Translated from http://c-faq.com/lib/regex.html
-\ int match(char *pat, char *str)
-\ {
-\   switch(*pat) {
-\   case '\0':  return !*str;
-\   case '*':   return match(pat+1, str) || *str && match(pat, str+1);
-\   case '.':   return *str && match(pat+1, str+1);
-\   default:    return *pat == *str && match(pat+1, str+1);
-\   }
-\ }
-
-: *pat ( regex -- regex char : grab next character of pattern )
-  dup c@ ;
-
-: *str ( string regex -- string regex char : grab next character string to match )
-  over c@ ;
-
-: pass ( c-addr1 c-addr2 -- bool : pass condition, characters matched )
-  2drop 1 ;
-
-: reject ( c-addr1 c-addr2 -- bool : fail condition, character not matched )
-  2drop 0 ;
-
-: *pat==*str ( c-addr1 c-addr2 -- c-addr1 c-addr2 bool )
-  2dup c@ swap c@ = ;
-
-: ++ ( u1 u2 u3 u4 -- u1+u3 u2+u4 : not quite d+ [does no carry] )
-  swap >r + swap r> + swap ;
-
-defer matcher
-
-: advance ( string regex char -- bool : advance both regex and string )
-  if 1 1 ++ matcher else reject then ;
-
-: advance-string ( string regex char -- bool : advance only the string )
-  if 1 0 ++ matcher else reject then ;
-
-: advance-regex ( string regex -- bool : advance matching )
-  2dup 0 1 ++ matcher if pass else *str advance-string then ;
-
-: match ( string regex -- bool : match a ASCIIZ pattern against an ASCIIZ string )
-  *pat
-  case
-           0 of drop c@ not   endof
-    [char] * of advance-regex endof
-    [char] . of *str advance  endof
-    
-    drop *pat==*str advance exit
-
-  endcase ;
-
-matcher is match
-
-\ CCITT
-
-: ccitt ( crc c-addr -- crc : calculate polynomial 0x1021 AKA "x16 + x12 + x5 + 1" )
-  c@                         ( get char )
-  limit over 256/ xor        ( crc x )
-  dup  4  rshift xor         ( crc x )
-  dup  5  lshift limit xor   ( crc x )
-  dup  12 lshift limit xor   ( crc x )
-  swap 8  lshift limit xor ; ( crc )
-
-( See http://stackoverflow.com/questions/10564491
-  and https://www.lammertbies.nl/comm/info/crc-calculation.html )
-: crc16-ccitt ( c-addr u -- u )
-  0xffff -rot
-  ['] ccitt foreach ;
-hide{ limit ccitt }hide
-
 ( ==================== Date ================================== )
-( This word set implements a words for date processing, so
-you can print out nicely formatted date strings. It implements
-the standard Forth word time&date and two words which interact
-with the libforth DATE instruction, which pushes the current
-time information onto the stack. )
+\  This word set implements a words for date processing, so
+\ you can print out nicely formatted date strings. It implements
+\ the standard Forth word time&date and two words which interact
+\ with the libforth DATE instruction, which pushes the current
+\ time information onto the stack. )
 
 
 : >month ( month -- c-addr u : convert month to month string )
@@ -1742,11 +1650,10 @@ time information onto the stack. )
 : >gmt ( bool -- GMT or DST? )
   if c" DST " else c" GMT " then ;
 
-: colon ( -- char : push a colon character )
-  [char] : ;
+: colon [char] : ; ( -- char : push a colon character )
 
 : 0? ( n -- : hold a space if number is less than base )
-  (base) u< if [char] 0 hold then ;
+  base @ u< if [char] 0 hold then ;
 
 ( .NB You can format the date in hex if you want! )
 : date-string ( date -- c-addr u : format a date string in transient memory )
