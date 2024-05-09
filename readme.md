@@ -49,12 +49,12 @@ An example session:
 	mkdir example
 	cd example
 	pwd
-	edit test.fth
+	edit test.fth \ Start editor commands
 	+ .( FIRST BLOCK ) cr
 	n
 	+ .( SECOND BLOCK ) cr
 	s
-	q
+	q     \ Back to "DOS"
 	ls
 	exe test.fth
 	df

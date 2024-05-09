@@ -218,15 +218,16 @@
 \ TODO: Test out of memory conditions
 \ TODO: Primitive journal? Commit changes to temp blocks and
 \ swap out?
-\ TODO: Glossary for SUBLEQ eForth as a text file
+\ TODO: Glossary for SUBLEQ eForth as a text file, extension
+\ programs for SUBLEQ eForth, ...
 \ TODO: Linear block allocation where possible
-\ TODO: glob/tiny regex engine (take from pickle project)
-\ TODO: Block and byte oriented files and utilities?
 \ TODO: CRC Utility, 16-bit CCITT 
-\ TODO: Time functionality
 \ TODO: Lock directories by searching all open file handles,
 \ do this to prevent deletions, renaming, and moving files
-\ in that directory.
+\ in that directory. Also lock files, only one file handle
+\ should be open per file.
+\ TODO: SUBLEQ eForth needs to reinitialize data structures on
+\ startup, and call `dos`.
 \
 
 defined (order) 0= [if]
@@ -253,6 +254,20 @@ defined ?depth 0= [if]
 
 defined du. 0= [if] : du. <# #s #> type ; [then]
 defined d- 0= [if] : d- dnegate d+ ; [then]
+defined d= 0= [if] : d= rot = -rot = and ; [then]
+defined 2swap 0= [if] : 2swap >r -rot r> -rot ; [then]
+defined d< 0= [if] 
+: d< rot 2dup >
+  if = nip nip if 0 exit then -1 exit then
+  2drop u< ;
+[then]
+defined d> 0= [if] : d>  2swap d< ; [then]
+defined dabs 0= [if] : dabs s>d if dnegate then ; [then]
+
+: dsignum ( d -- n )
+  2dup 0 0 d= if 2drop  0 exit then
+       0 0 d< if       -1 exit then
+                        1 ;
 
 defined spaces 0= [if]
 : spaces begin ?dup 0> while bl emit 1- repeat ;
@@ -358,6 +373,8 @@ dup 1+ swap constant EPERM ( permission denied )
 dup 1+ swap constant ELOCK ( could not obtain lock )
 dup 1+ swap constant ERONY ( attempt to modify read-only FS )
 dup 1+ swap constant EHAND ( file I/O error )
+dup 1+ swap constant ESEEK ( not seekable )
+dup 1+ swap constant ELOCK ( could not acquire lock )
 drop
 
 : e>s ( code -- )
@@ -380,6 +397,8 @@ drop
   dup ELOCK = if drop s" already locked" exit then
   dup ERONY = if drop s" read only" exit then
   dup EHAND = if drop s" file i/o error" exit then
+  dup ESEEK = if drop s" not seekable" exit then
+  dup ELOCK = if drop s" locked" exit then
   drop s" unknown" ;
 
 variable error-level 0 error-level !
@@ -432,6 +451,7 @@ variable eline 0 eline !       \ Empty link in directory
 variable exit-shell 0 exit-shell ! \ Used to exit FS shell
 variable grepl 0 grepl !       \ used to store grep length
 variable insensitive 0 insensitive ! \ Case insensitivity
+variable fatal 0 fatal !
 
 8 constant fopen-max
 7 cells constant fhandle-size
@@ -439,6 +459,24 @@ create fhandles fhandle-size fopen-max * dup cells allot
        fhandles swap erase
 create reqbuf maxname 1+ allot \ File name as a counted string
 create newline 2 c, $D c, $A c, align
+
+  1 constant flg.used
+  2 constant flg.ren
+  4 constant flg.wen
+  8 constant flg.stdin
+ 16 constant flg.stdout
+ 32 constant flg.error \ TODO: Use this to indicate problems
+ 64 constant flg.eof
+128 constant flg.mem \ Reserved for memory mapped files
+
+\ Offsets into the file handle structure
+: f.flags 0 cells + ; ( File Flags and Options )
+: f.head 1 cells + ;  ( Head Block of file )
+: f.end  2 cells + ;  ( Bytes in last block )
+: f.blk  3 cells + ;  ( Current Block Position )
+: f.pos  4 cells + ;  ( Position in bytes within block )
+: f.dline 5 cells + ; ( Directory Line of File )
+: f.dblk 6 cells + ;  ( Directory Block of File )
 
 defined eforth [if] : numberify number? ; [else]
 : numberify ( a u -- d -1 | a u 0 : easier than >number )
@@ -458,6 +496,19 @@ defined eforth [if] : numberify number? ; [else]
   2drop r> if dnegate then r> base ! -1 ;
 [then]
 
+: fvalid? dup 0 fopen-max 1+ within 0= throw ; 
+: findex fvalid? fhandles swap fhandle-size * + ;
+: fundex fhandles - fhandle-size / ;
+: locked? ( dir -- f )
+  >r 0
+  begin
+    dup fopen-max <
+  while
+    dup findex f.dblk @ r@ = if rdrop drop -1 exit then
+    1+
+  repeat
+  drop rdrop 0 ;
+: locked!? locked? ELOCK error ; ( dir -- )
 : equate insensitive @ if icompare exit then compare ;
 : examine insensitive @ if isearch exit then search ;
 : ro? read-only @ 0<> ERONY error ; ( -- f )
@@ -471,9 +522,11 @@ defined eforth [if] : numberify number? ; [else]
 : save read-only @ 0= if update save-buffers then ;
 : block? ( blk -- blk )
   start @ + dup start @ end @ 1+ within 0= EIBLK error ;
-\ TODO: Trap on bad blocks, mark bad blocks, complete fail if
-\ FAT block cannot be read/wrote.
-: addr? block? block ; ( blk -- addr )
+: addr? block? [ ' block ] literal catch 0<> if
+   \ We could mark the block as being bad so long as it is
+   \ not a FAT block, otherwise that is a fatal error.
+   -1 fatal ! -1 EIBLK error
+ then ; ( blk -- addr )
 : eline? eline @ ;
 : little-endian base c@ 0<> ; 
 cell 2 = little-endian and [if]
@@ -604,10 +657,12 @@ cell 2 = little-endian and [if]
     then
     c/blk +
   next drop ;
-( Make a word to limit arithmetic to a 16-bit value )
-cell 2 = [if] 
+
+cell 2 = [if] \ limit arithmetic to a 16-bit value
 : limit immediate ;  [else] : limit $FFFF and ; [then]
 
+\ http://stackoverflow.com/questions/10564491
+\ https://www.lammertbies.nl/comm/info/crc-calculation.html
 : ccitt ( crc c-addr -- crc : Poly. 0x1021 AKA "x16+x12+x5+1" )
   c@                         ( get char )
   limit over 8 rshift xor    ( crc x )
@@ -615,14 +670,9 @@ cell 2 = [if]
   dup  5  lshift limit xor   ( crc x )
   dup  12 lshift limit xor   ( crc x )
   swap 8  lshift limit xor ; ( crc )
-
-\ http://stackoverflow.com/questions/10564491
-\ https://www.lammertbies.nl/comm/info/crc-calculation.html
-
 : crc ( c-addr u -- ccitt : 16 bit CCITT CRC )
   $FFFF -rot
   begin ?dup while >r tuck ccitt swap r> +string repeat drop ;
-
 
 : link-load [ ' +load ] literal apply ; ( file -- )
 : link-list [ ' +list ] literal apply ; ( file -- )
@@ -768,6 +818,7 @@ cell 2 = [if]
 : special? dirent-type@ [char] S = ; ( dir line -- f)
 : file? dirent-type@ [char] F = ; ( dir line -- f)
 : (remove) ( dir line f -- )
+  2 pick locked!?
   >r 2dup dir? if
     r@ 0= ENFIL error
     2dup dirent-blk@ is-unempty? EDNEM error
@@ -813,6 +864,7 @@ cell 2 = [if]
   dup blk.end <> if ." EXTRA 1st File: " cr dup link-list then
   2drop ;
 
+\ TODO: Delete block command
 wordlist constant {edlin}
 {edlin} +order definitions
 variable vista 1 vista ! \ Used to be `scr`
@@ -942,6 +994,7 @@ variable line 0 line !
 : melt 0 read-only ! ;
 : fdisk melt bcheck fmt.init fmt.fat fmt.blks fmt.root mount ; 
 : rename ( "file" "file" -- )
+  ( `locked!?` does not need to be called )
   ro?
   narg
   namebuf peekd dir-find dup >r 0< EFILE error
@@ -957,8 +1010,9 @@ variable line 0 line !
   movebuf namebuf equate 0= if rdrop 2drop exit then
   2dup s" ." equate 0= if rdrop 2drop exit then
   s" .." equate 0= if 
-    popd peekd >r pushd
+    popd peekd dup locked!? >r pushd
   else
+    peekd locked!?
     namebuf peekd dir-find dup 0>= if
       dup peekd swap dir? if
         peekd swap dirent-blk@ >r
@@ -1013,6 +1067,7 @@ variable line 0 line !
   namebuf peekd dir-find dup >r 0< ENFIL error
   ballocs dup link-blank peekd r> dirent-blk@ fat-append save ;
 : ftruncate ( "file" count -- )
+  peekd locked!?
   ro?
   narg integer?
   namebuf peekd dir-find dup >r 0< ENFIL error
@@ -1279,35 +1334,11 @@ defined eforth 0= [if]
 \
 \ TODO: Optionally allow directories to be opened up
 \ TODO: Open memory as a file.
-\ TODO: Handle deletion of open files?
-\ Note: Locking files does not need to be done if all 
-\ operations are atomic (write-file should flush).
 \
-
-
-  1 constant flg.used
-  2 constant flg.ren
-  4 constant flg.wen
-  8 constant flg.stdin
- 16 constant flg.stdout
- 32 constant flg.error \ TODO: Use this to indicate problems
- 64 constant flg.eof
-128 constant flg.mem \ Reserved for memory mapped files
-
-\ Offsets into the file handle structure
-: f.flags 0 cells + ; ( File Flags and Options )
-: f.head 1 cells + ;  ( Head Block of file )
-: f.end  2 cells + ;  ( Bytes in last block )
-: f.blk  3 cells + ;  ( Current Block Position )
-: f.pos  4 cells + ;  ( Position in bytes within block )
-: f.dline 5 cells + ; ( Directory Line of File )
-: f.dblk 6 cells + ;  ( Directory Block of File )
 
 : set tuck @ or swap ! ; ( u a -- )
 : toggle tuck @ xor swap ! ; ( u a -- )
 : clear tuck @ swap invert and swap ! ; ( u a -- )
-: fvalid? dup 0 fopen-max 1+ within 0= throw ; 
-: findex fvalid? fhandles swap fhandle-size * + ;
 : ferase findex fhandle-size erase ;
 : last? link blk.end = ; ( blk -- f )
 
@@ -1362,7 +1393,8 @@ defined holds 0= [if]
 : r/o flg.ren ; ( -- fam )
 : w/o flg.wen ; ( -- fam )
 : r/w r/o w/o or ; ( -- fam )
-: stdio r/w flg.stdout flg.stdin or or ;
+: (stdio) flg.stdout flg.stdin or ;
+: stdio r/w (stdio) or ;
 : fam? dup stdio invert and 0<> throw ; ( fam -- fam )
 : bin fam? ; ( fam -- fam )
 : ferror findex f.flags @ flg.error and 0<> ; ( handle -- f )
@@ -1448,6 +1480,7 @@ defined holds 0= [if]
 : file-position ( fileid -- ud ior ) 
   dup ferror if 2drop 0 0 EHAND exit then
   findex >r
+  r@ f.flags @ (stdio) and 0<> if rdrop 0 0 ESEEK exit then
   0 r@ f.head @ begin
     dup r@ f.blk @ <>
   while
@@ -1505,26 +1538,37 @@ defined holds 0= [if]
   findex dup f.flags @ flg.wen and 
   0= if rdrop 2drop drop EPERM exit then
   dup f.flags @ flg.stdout and if rdrop drop type 0 exit then
-    >r
+  >r
   begin
     ?dup
   while ( c-addr u )
-    \ TODO: Update `f.end` (max f.pos f.end)
-    r@ nlast? if
-      
-    then
+     dup r@ f.pos + dup b/buf >= if ( c-addr u nu )
+       
+       r@ nlast? if
+       then
+       \ Next or allocate block     
+       \ Write...
+     else ( c-addr u nu )
+       r@ nlast? if dup r@ f.end ! then
+       r@ f.blk @ addr?
+     then
 
-    r@ remaining over min ( c-addr u min )
-    r@ f.blk @ addr? r@ f.pos @ + ( c-addr u min baddr )
-    swap ( c-addr u baddr min ) 3 pick swap
-    >r swap r> dup >r cmove modify r>
-    dup r@ nblock
-    0= if 
-      \ TODO: Allocate block
-      balloc r@ f.blk @ fat-append
-    then
-    r@ flush-file throw
-    /string
+\    \ TODO: Update `f.end` (max f.pos f.end)
+\    r@ nlast? if
+\      
+\    then
+\
+\    r@ remaining over min ( c-addr u min )
+\    r@ f.blk @ addr? r@ f.pos @ + ( c-addr u min baddr )
+\    swap ( c-addr u baddr min ) 3 pick swap
+\    >r swap r> dup >r cmove modify r>
+\    dup r@ nblock
+\    0= if 
+\      \ TODO: Allocate block
+\      balloc r@ f.blk @ fat-append
+\    then
+\    r@ flush-file throw
+\    /string
   repeat
   rdrop drop r> 0 ;
 
@@ -1533,15 +1577,36 @@ defined holds 0= [if]
   newline count r> write-file ;  
 : reposition-file ( ud fileid -- ior ) 
   findex dup >r f.flags flg.eof swap clear
+  r@ f.flags @ (stdio) and 0<> if rdrop 2drop ESEEK exit then
   um/mod
 
   -1 throw
 ; 
+
 : resize-file ( ud fileid -- ior )
   \ This needs to allocate, do nothing, or free, depending
   \ on the situation.
-  drop 2drop -1
-;
+  findex >r
+  r@ f.flags @ (stdio) and 0<> if 
+    rdrop 2drop 0 0 ESEEK exit 
+  then
+  r@ fundex file-position 
+  ?dup if rdrop 2>r >r 2drop r> 2r> exit then
+  2>r 2dup 2r> d- dsignum dup 0= if \ Do nothing...
+    drop 2drop rdrop 0 exit
+  then
+  \ TODO: Get this working, it's nonsense
+\  -1 throw
+  0< if \ Truncate
+    b/buf um/mod dup r@ f.head @ btruncate
+    r@ f.end !
+    \ TODO: Set f.blk/f.end
+    rdrop
+    0
+    exit
+  then \ Grow
+  b/buf um/mod dup ballocs r@ f.head @ fat-append
+  r> f.end ! ;
 
 defined eforth 0= [if]
 \ File Words Test
@@ -1594,95 +1659,3 @@ handle @ close-file throw
 dos
 {ffs} +order
 
-0 [if]
-
-( ==================== Date ================================== )
-\  This word set implements a words for date processing, so
-\ you can print out nicely formatted date strings. It implements
-\ the standard Forth word time&date and two words which interact
-\ with the libforth DATE instruction, which pushes the current
-\ time information onto the stack. )
-
-
-: >month ( month -- c-addr u : convert month to month string )
-  case
-     1 of c" Jan " endof
-     2 of c" Feb " endof
-     3 of c" Mar " endof
-     4 of c" Apr " endof
-     5 of c" May " endof
-     6 of c" Jun " endof
-     7 of c" Jul " endof
-     8 of c" Aug " endof
-     9 of c" Sep " endof
-    10 of c" Oct " endof
-    11 of c" Nov " endof
-    12 of c" Dec " endof
-    -11 throw
-  endcase ;
-
-: .day ( day -- c-addr u : add ordinal to day )
-  10 mod
-  case
-    1 of c" st " endof
-    2 of c" nd " endof
-    3 of c" rd " endof
-    drop c" th " exit
-  endcase ;
-
-: >day ( day -- c-addr u: add ordinal to day of month )
-  dup  1 10 within if .day   exit then
-  dup 10 20 within if drop c" th " exit then
-  .day ;
-
-: >weekday ( weekday -- c-addr u : print the weekday )
-  case
-    0 of c" Sun " endof
-    1 of c" Mon " endof
-    2 of c" Tue " endof
-    3 of c" Wed " endof
-    4 of c" Thu " endof
-    5 of c" Fri " endof
-    6 of c" Sat " endof
-    -11 throw
-  endcase ;
-
-: >gmt ( bool -- GMT or DST? )
-  if c" DST " else c" GMT " then ;
-
-: colon [char] : ; ( -- char : push a colon character )
-
-: 0? ( n -- : hold a space if number is less than base )
-  base @ u< if [char] 0 hold then ;
-
-( .NB You can format the date in hex if you want! )
-: date-string ( date -- c-addr u : format a date string in transient memory )
-  9 reverse ( reverse the date string )
-  <#
-    dup #s drop 0? ( seconds )
-    colon hold
-    dup #s drop 0? ( minute )
-    colon hold
-    dup #s drop 0? ( hour )
-    dup >day holds
-    #s drop ( day )
-    >month holds
-    bl hold
-    #s drop ( year )
-    >weekday holds
-    drop ( no need for days of year )
-    >gmt holds
-    0
-  #> ;
-
-: .date ( date -- : print the date )
-  date-string type ;
-
-: time&date ( -- second minute hour day month year )
-  date
-  3drop ;
-
-hide{ >weekday .day >day >month colon >gmt 0? }hide
-
-( ==================== Date ================================== )
-[then]
