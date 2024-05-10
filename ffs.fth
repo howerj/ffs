@@ -215,17 +215,12 @@
 \ TODO: Rewrite utilities using the new `read-file` and
 \ `write-file` utilities.
 \ TODO: Better path parsing?
-\ TODO: Test out of memory conditions
 \ TODO: Primitive journal? Commit changes to temp blocks and
 \ swap out?
 \ TODO: Glossary for SUBLEQ eForth as a text file, extension
 \ programs for SUBLEQ eForth, ...
 \ TODO: Linear block allocation where possible
 \ TODO: CRC Utility, 16-bit CCITT 
-\ TODO: Lock directories by searching all open file handles,
-\ do this to prevent deletions, renaming, and moving files
-\ in that directory. Also lock files, only one file handle
-\ should be open per file.
 \ TODO: SUBLEQ eForth needs to reinitialize data structures on
 \ startup, and call `dos`.
 \
@@ -689,7 +684,8 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
   until drop cr ." EOF" ; 
 : fat-end ( blk -- blk : last block in FAT chain )
   begin dup link blk.end = if exit then link again ;
-: resolve ; \ TODO: Turn name into dir/line
+: resolve ( c-addr u -- dir )
+  ; \ TODO: Turn name into dir/line
 : gc ; \ TODO: Copy FAT nodes
 \ N.B. `fat-append` does not set the appended block to
 \ `blk.end`, `balloc` does however. This is so another linked
@@ -1389,29 +1385,26 @@ defined holds 0= [if]
   unused? 0= if 0 exit then
   dup ferase
   dup findex f.flags flg.used swap set -1 ;
-
-: r/o flg.ren ; ( -- fam )
-: w/o flg.wen ; ( -- fam )
-: r/w r/o w/o or ; ( -- fam )
-: (stdio) flg.stdout flg.stdin or ;
-: stdio r/w (stdio) or ;
-: fam? dup stdio invert and 0<> throw ; ( fam -- fam )
-: bin fam? ; ( fam -- fam )
-: ferror findex f.flags @ flg.error and 0<> ; ( handle -- f )
-: fopened? findex f.flags @ flg.used and 0<> ; ( handle -- f )
-: feof? findex f.flags @ flg.eof and 0<> ; ( handle -- f )
-: fail findex f.flags flg.error swap set ; ( handle -- )
-\ : fassert >r ( fhandle -- )
-\  r@ fopened? 0= and throw
-\  r@ findex f.pos @ r@ findex f.end @ >= and throw
-\  rdrop ;
-
-
 : pack ( c-addr u )
   reqbuf maxname 1+ blank
   nlen?
   dup reqbuf c!
   reqbuf 1+ swap cmove ;
+
+: r/o flg.ren ; ( -- fam )
+: w/o flg.wen ; ( -- fam )
+: r/w r/o w/o or ; ( -- fam )
+
+: (stdio) flg.stdout flg.stdin or ;
+: stdio r/w (stdio) or ;
+: fam? dup stdio invert and 0<> throw ; ( fam -- fam )
+
+: bin fam? ; ( fam -- fam )
+
+: ferror findex f.flags @ flg.error and 0<> ; ( handle -- f )
+: fopened? findex f.flags @ flg.used and 0<> ; ( handle -- f )
+: feof? findex f.flags @ flg.eof and 0<> ; ( handle -- f )
+: fail findex f.flags flg.error swap set ; ( handle -- )
 
 : open-file ( c-addr u fam -- fileid ior ) 
   fam?
@@ -1461,9 +1454,10 @@ defined holds 0= [if]
   dup f.flags @ flg.stdin and 0<> EPERM error
   f.head @ link-load ; 
 : included ( c-addr u -- )
+  pack reqbuf required? drop reqbuf count
   ncopy namebuf peekd dir-find dup 0< EFILE error
   peekd swap dirent-blk@ link-load ; 
-: include exe ; ( "file" -- )
+: include token count included ; ( "file" -- )
 : required ( c-addr u -- )
   pack reqbuf dup count mcopy required? ?exit reqbuf count
   included ;
@@ -1471,6 +1465,7 @@ defined holds 0= [if]
   token dup count mcopy
   required? ?exit movebuf included ;
 : rename-file ( c-addr1 u1 c-addr2 u2 -- ior ) 
+  locked!?
   mcopy ncopy
   namebuf peekd dir-find dup >r 0< if rdrop EFILE exit then
   movebuf peekd dir-find 0>= if rdrop EEXIS exit then
@@ -1533,44 +1528,34 @@ defined holds 0= [if]
   \ TODO: Block oriented I/O, handle stdin, byte oriented I/O
 ; 
 
+: stretch f.pos @ b/buf swap - ;
 : write-file ( c-addr u fileid -- ior ) 
-  over >r
   findex dup f.flags @ flg.wen and 
-  0= if rdrop 2drop drop EPERM exit then
+  0= if 2drop drop EPERM exit then
   dup f.flags @ flg.stdout and if rdrop drop type 0 exit then
   >r
   begin
     ?dup
   while ( c-addr u )
-     dup r@ f.pos + dup b/buf >= if ( c-addr u nu )
-       
-       r@ nlast? if
+     r@ stretch 0= if 
+       r@ nlast? if \ TODO: balloc ior
+         balloc r@ f.blk @ fat-append
        then
-       \ Next or allocate block     
-       \ Write...
-     else ( c-addr u nu )
-       r@ nlast? if dup r@ f.end ! then
-       r@ f.blk @ addr?
+       r@ f.blk @ link r@ f.blk !
+       0 r@ f.pos !
+       0 r@ f.end !
+     else
+        dup r@ stretch min >r over r> ( c-addr u c-addr v )
+        r@ f.blk @ addr? r@ f.pos @ + swap dup >r cmove r> 
+        ( c-addr u v )
+        modify
+        dup r@ f.pos +!
+        /string
+        r@ nlast? if r@ f.pos @ r@ f.end @ max r@ f.end ! then
      then
-
-\    \ TODO: Update `f.end` (max f.pos f.end)
-\    r@ nlast? if
-\      
-\    then
-\
-\    r@ remaining over min ( c-addr u min )
-\    r@ f.blk @ addr? r@ f.pos @ + ( c-addr u min baddr )
-\    swap ( c-addr u baddr min ) 3 pick swap
-\    >r swap r> dup >r cmove modify r>
-\    dup r@ nblock
-\    0= if 
-\      \ TODO: Allocate block
-\      balloc r@ f.blk @ fat-append
-\    then
-\    r@ flush-file throw
-\    /string
   repeat
-  rdrop drop r> 0 ;
+  r@ fundex flush-file throw
+  rdrop drop 0 ;
 
 : write-line ( c-addr u fileid -- ior )
   dup >r write-file ?dup if rdrop exit then
@@ -1654,6 +1639,18 @@ buf1 b/buf type cr
 .( === READ IN === ) cr
 
 handle @ close-file throw
+
+\ s" demo.fth" r/w open-file throw handle !
+: yes ( c-addr u file n )
+  1- for
+    2 pick 2 pick 2 pick write-file throw
+  next
+  drop 2drop ;
+\ s" ABCD" handle @ write-file throw
+\ s" 1234567890" handle @ 1000 yes
+\ handle @ close-file throw
+
+
 [then]
 
 dos
