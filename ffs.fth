@@ -220,9 +220,14 @@
 \ TODO: Glossary for SUBLEQ eForth as a text file, extension
 \ programs for SUBLEQ eForth, ...
 \ TODO: Linear block allocation where possible
+\ TODO: Empty or Zero length files
 \ TODO: CRC Utility, 16-bit CCITT 
 \ TODO: SUBLEQ eForth needs to reinitialize data structures on
 \ startup, and call `dos`.
+\ TODO: Command to dump file system as a series of commands
+\ to build that file system, this can be used in lieu of
+\ defragmenting
+\
 \
 
 defined (order) 0= [if]
@@ -258,6 +263,21 @@ defined d< 0= [if]
 [then]
 defined d> 0= [if] : d>  2swap d< ; [then]
 defined dabs 0= [if] : dabs s>d if dnegate then ; [then]
+
+defined 2over 0= [if]
+: 2over >r >r 2dup r> swap >r swap r> r> -rot ;
+[then]
+
+defined 2swap 0= [if]
+: 2swap >r -rot r> -rot ; ( n1 n2 n3 n4 -- n3 n4 n1 n2 )
+[then]
+
+defined dmax 0= [if]
+: dmax 2over 2over d< if 2swap then 2drop ; ( d1 d2 -- d )
+[then]
+defined dmin 0= [if]
+: dmin 2over 2over d> if 2swap then 2drop ; ( d1 d2 -- d )
+[then]
 
 : dsignum ( d -- n )
   2dup 0 0 d= if 2drop  0 exit then
@@ -348,7 +368,7 @@ wordlist constant {ffs}
 {ffs} +order definitions
 wordlist constant {dos}
 
-128
+127
 dup 1+ swap constant EUNKN ( unknown error )
 dup 1+ swap constant EIBLK ( bad block )
 dup 1+ swap constant EFILE ( file not found )
@@ -369,7 +389,6 @@ dup 1+ swap constant ELOCK ( could not obtain lock )
 dup 1+ swap constant ERONY ( attempt to modify read-only FS )
 dup 1+ swap constant EHAND ( file I/O error )
 dup 1+ swap constant ESEEK ( not seekable )
-dup 1+ swap constant ELOCK ( could not acquire lock )
 drop
 
 : e>s ( code -- )
@@ -393,14 +412,14 @@ drop
   dup ERONY = if drop s" read only" exit then
   dup EHAND = if drop s" file i/o error" exit then
   dup ESEEK = if drop s" not seekable" exit then
-  dup ELOCK = if drop s" locked" exit then
   drop s" unknown" ;
 
 variable error-level 0 error-level !
 : elucidate dup error-level ! ?dup if cr e>s type ." ?" then ;
 : error swap if dup elucidate throw then drop ; ( f code -- )
 
-$0000 constant blk.end      \ End of FAT chain
+$FFF0 constant blk.lastv    \ Last Valid Block
+$FFFB constant blk.end      \ End of FAT chain
 $FFFC constant blk.unmapped \ Unmapped / Not memory
 $FFFD constant blk.bad-blk  \ Block is bad
 $FFFE constant blk.special  \ Special blocks
@@ -417,13 +436,13 @@ namebuf: compbuf
 namebuf: movebuf
 
 32 constant dirsz                \ Length of directory entry
-create dirent-store dirsz allot
-variable dirp 0 dirp !           \ Directory Pointer
+create dirent-store dirsz allot  \ Directory Stack
+variable dirp 0 dirp !           \ Directory Stack Pointer
 variable read-only 0 read-only ! \ Make file system read only 
 $0100 constant version           \ File System version
 
 defined eforth [if]
-variable start 0 start !       \ Starting block
+variable start 1 start !       \ Starting block
 variable end   126 end !       \ End block
 65 constant init               \ Initial program block
 66 constant fat                \ FAT Block
@@ -435,7 +454,7 @@ variable end   128 end !       \ End block
 0 constant init                \ Initial program block
 1 constant fat                 \ FAT Block
 2 constant dirstart            \ Top level directory
-create copy-store 1024 allot   \ Used to copy blocks
+create copy-store b/buf allot  \ Used to copy blocks
 [then]
 2 constant dsl                 \ Directory Start Line
 16 constant l/blk              \ Lines per block
@@ -446,7 +465,7 @@ variable eline 0 eline !       \ Empty link in directory
 variable exit-shell 0 exit-shell ! \ Used to exit FS shell
 variable grepl 0 grepl !       \ used to store grep length
 variable insensitive 0 insensitive ! \ Case insensitivity
-variable fatal 0 fatal !
+variable fatal 0 fatal ! \ Has a fatal error occurred?
 
 8 constant fopen-max
 7 cells constant fhandle-size
@@ -515,7 +534,9 @@ defined eforth [if] : numberify number? ; [else]
 : integer? integer 0= dpl @ 0>= or -$18 and throw ;
 : modify read-only @ 0= if update then ;
 : save read-only @ 0= if update save-buffers then ;
+: fatal? fatal @ 0<> throw ;
 : block? ( blk -- blk )
+  fatal?
   start @ + dup start @ end @ 1+ within 0= EIBLK error ;
 : addr? block? [ ' block ] literal catch 0<> if
    \ We could mark the block as being bad so long as it is
@@ -525,17 +546,26 @@ defined eforth [if] : numberify number? ; [else]
 : eline? eline @ ;
 : little-endian base c@ 0<> ; 
 cell 2 = little-endian and [if]
-: 16! ro? ! modify ;
-: 16@ @ ;
+: 16! fatal? ro? ! modify ;
+: 16@ fatal? @ ;
 [else]
-: 16! ro? 2dup c! swap 8 rshift swap 1+ c! modify ;
-: 16@ dup c@ swap 1+ c@ 8 lshift or ;
+: 16! fatal? ro? 2dup c! swap 8 rshift swap 1+ c! modify ;
+: 16@ fatal? dup c@ swap 1+ c@ 8 lshift or ;
 [then]
-\ : linkable dup 0 end @ 1+ within ; ( blk -- blk f )
-: linkable dup dirstart 1+ end @ 1+ within ; ( blk -- blk f )
+
+: fat? dup [ b/buf 2/ ] literal u<= ; ( blk -- blk f )
+: fatidx [ b/buf 2/ ] literal /mod swap ; ( blk -- blk n )
+: >fat 
+  \ TODO: Extra FAT tables go here. They must be protect also,
+  \ also prevent freeing and allocating these blocks...
+  fat? 0= throw
+  2* fat addr? + 16@ ;
+: linkable 
+  dup 1 end @ 1+ within 
+  over >fat blk.lastv u< swap and ; ( blk -- blk f )
+\ : linkable dup dirstart 1+ end @ 1+ within ; ( blk -- blk f )
 : link ( blk -- blk : load next block from FAT )
-  linkable 0= if drop blk.end exit then
-  2* fat addr? + 16@ ; ( blk -- blk )
+  linkable 0= if drop blk.end exit then >fat ; 
 : previous ( head-blk prior-to-blk -- blk )
   swap
   begin
@@ -560,15 +590,18 @@ cell 2 = little-endian and [if]
 : bblk addr? b/buf blank save ; ( blk -- )
 : fblk addr? b/buf erase save ; ( blk -- )
 : free? ( -- blk f )
-  fat addr? init
+  fat addr? dirstart 1+
   begin
     dup end @ <
   while
     2dup 2* + 16@ blk.free = if nip -1 exit then
     1+
   repeat 2drop 0 0 ;
+: balloc? ( -- blk -1 | -1 0 )
+  free? 0= if -1 0 exit then
+  dup blk.end swap reserve save -1 ;
 : balloc ( -- blk : allocate single block )
-  free? 0= EFULL error dup blk.end swap reserve save ;
+  balloc? 0= EFULL error ;
 : btally ( blk-type -- n )
   0 fat addr? b/buf 2/ 1- for
     dup 16@ 3 pick = if 
@@ -589,6 +622,9 @@ cell 2 = little-endian and [if]
   dup link blk.special = EIBLK error
   dup end @ >= EIBLK error ;
 : bfree ( blk -- : free a linked list ) 
+  dup dirstart <= if drop exit then
+  dup end @ >= if drop exit then
+  linkable 0= if drop exit then
   begin
   dup link swap blk.free swap bvalid? reserve
   dup blk.end = until drop save ; 
@@ -616,7 +652,6 @@ cell 2 = little-endian and [if]
   fat addr? b/buf erase
   0 b/buf 2/ 1- for blk.unmapped over reserve 1+ next drop
   init if 0 init 1- reserve-range then
-\  blk.special 0 init setrange
   blk.special init reserve
   blk.special fat reserve
   blk.special dirstart reserve
@@ -880,6 +915,8 @@ variable line 0 line !
      set-order words set-order ; 
 : n 0 line ! s vista @ link blk.end = if 
     balloc dup bblk head @ fat-append 
+\ TODO: Call `dirent-rem!` here, and anywhere where we are
+\ increase the block size.
   then
   vista @ link vista ! l ;
 : p ( -- : prev block )
@@ -997,7 +1034,7 @@ variable line 0 line !
   narg ( dir-find uses `findbuf` )
   namebuf peekd dir-find 0>= EEXIS error
   findbuf peekd r> dirent-name! ;
-: move ( "file" "file" -- )
+: mv ( "file" "file" -- )
   ro?
   narg namebuf mcopy 
   movebuf peekd dir-find dup >r dup 0<= EFILE error
@@ -1063,6 +1100,7 @@ variable line 0 line !
   namebuf peekd dir-find dup >r 0< ENFIL error
   ballocs dup link-blank peekd r> dirent-blk@ fat-append save ;
 : ftruncate ( "file" count -- )
+\ TODO: Set dirent-rem!
   peekd locked!?
   ro?
   narg integer?
@@ -1153,12 +1191,12 @@ variable line 0 line !
 : del rm ;
 : ed edit ;
 : exit halt ;
-: mv move ;
 : quit halt ;
 : sh exe ;
 : touch mkfile ;
-: type cat ;
 : diff cmp ;
+( : move mv ; ) \ Clashes with FORTHs `move` word.
+( : type cat ; ) \ Clashes with FORTHs `type` word.
 
 defined eforth [if]
  .( HERE: ) here u. cr 
@@ -1176,7 +1214,7 @@ defined eforth 0= ?\ mknod [BOOT] 0
 defined eforth 0= ?\ mknod [FAT] 1
 defined eforth    ?\ mknod [BOOT] 65
 defined eforth    ?\ mknod [FAT] 66
-\ defined eforth    ?\ mknod [KERNEL] 0
+defined eforth    ?\ mknod [KERNEL] 1
 edit help.txt
 + FORTH FILE SYSTEM HELP AND COMMANDS
 +
@@ -1200,7 +1238,7 @@ edit help.txt
 +
 + Commands:
 +
-+ cat / type <FILE>: display a file
++ cat <FILE>: display a file
 + cd / chdir <DIR>: change working directory to <DIR>
 + cls: clear screen
 + cmp / diff <FILE> <FILE>: compare two files
@@ -1226,7 +1264,6 @@ edit help.txt
 + mknod <FILE> <NUM>: make a special <FILE> with <NUM>
 + more <FILE>: display a file, pause for each block
 + mount: attempt file system mounting
-+ move <FILE> <FILE/DIR>: move into directory or rename file
 + pwd: print current working directory
 + rename <DIR/FILE1> <DIR/FILE2>: rename a file or directory
 + rm / del <FILE>: remove a <FILE> and not a <DIR>
@@ -1391,9 +1428,9 @@ defined holds 0= [if]
   dup reqbuf c!
   reqbuf 1+ swap cmove ;
 
-: r/o flg.ren ; ( -- fam )
-: w/o flg.wen ; ( -- fam )
-: r/w r/o w/o or ; ( -- fam )
+flg.ren constant r/o
+flg.wen constant w/o
+r/o w/o or constant r/w
 
 : (stdio) flg.stdout flg.stdin or ;
 : stdio r/w (stdio) or ;
@@ -1405,6 +1442,21 @@ defined holds 0= [if]
 : fopened? findex f.flags @ flg.used and 0<> ; ( handle -- f )
 : feof? findex f.flags @ flg.eof and 0<> ; ( handle -- f )
 : fail findex f.flags flg.error swap set ; ( handle -- )
+
+: nlast? f.blk @ link blk.end = ;
+: limit? dup nlast? if f.end @ exit then drop b/buf ;
+: remaining dup >r f.pos @ r> limit? swap - ;
+: nblock ( u findex -- f )
+  >r r@ f.pos +!
+  r@ f.pos @ r@ limit? >= if
+    r@ nlast? if
+      flg.eof r@ f.flags set
+      rdrop 0 exit
+    then
+    r@ limit? r@ f.pos @ swap - r@ f.pos !
+    r@ f.blk @ link r@ f.blk !
+  then
+  rdrop -1 ;
 
 : open-file ( c-addr u fam -- fileid ior ) 
   fam?
@@ -1484,24 +1536,16 @@ defined holds 0= [if]
   repeat drop 
   b/buf um*
   r@ f.pos @ 0 d+ rdrop 0 ;
+: file-length ( fileid -- ud ior )
+  findex >r
+  r@ f.flags @ (stdio) and if rdrop 0 0 EPERM exit then
+  r@ f.head @ bcount 1- b/buf um*
+  r> f.end @ 0 d+
+  0 ;
 : file-status ( c-addr u -- x ior )
   r/o open-file ?dup if exit then
   close-file 0 swap ;
 
-: nlast? f.blk @ link blk.end = ;
-: limit? dup nlast? if f.end @ exit then drop b/buf ;
-: remaining dup >r f.pos @ r> limit? swap - ;
-: nblock ( u findex -- f )
-  >r r@ f.pos +!
-  r@ f.pos @ r@ limit? >= if
-    r@ nlast? if
-      flg.eof r@ f.flags set
-      rdrop 0 exit
-    then
-    r@ limit? r@ f.pos @ swap - r@ f.pos !
-    r@ f.blk @ link r@ f.blk !
-  then
-  rdrop -1 ;
 : read-file ( c-addr u fileid -- u ior )
   over >r >r 2dup erase r>
   findex dup f.flags @ flg.ren and
@@ -1524,9 +1568,21 @@ defined holds 0= [if]
   repeat
   rdrop drop r> 0 ;
 
+\ TODO: test this
 : read-line ( c-addr u fileid -- u flag ior ) 
-  \ TODO: Block oriented I/O, handle stdin, byte oriented I/O
-; 
+  over >r >r
+  begin
+    ?dup
+  while
+    over 1 r@ read-file ?dup if
+      nip rdrop r> swap - swap rot drop 0 swap exit
+    then
+    0= if nip rdrop r> swap - 0 0 exit then
+    over c@ $A = if nip rdrop r> swap - -1 0 exit then
+    +string
+  repeat
+  2drop
+  rdrop r> 0 0 ; 
 
 : stretch f.pos @ b/buf swap - ;
 : write-file ( c-addr u fileid -- ior ) 
@@ -1538,8 +1594,9 @@ defined holds 0= [if]
     ?dup
   while ( c-addr u )
      r@ stretch 0= if 
-       r@ nlast? if \ TODO: balloc ior
-         balloc r@ f.blk @ fat-append
+       r@ nlast? if
+         balloc? 0= if 2drop rdrop EFULL exit then
+         r@ f.blk @ fat-append
        then
        r@ f.blk @ link r@ f.blk !
        0 r@ f.pos !
@@ -1560,13 +1617,21 @@ defined holds 0= [if]
 : write-line ( c-addr u fileid -- ior )
   dup >r write-file ?dup if rdrop exit then
   newline count r> write-file ;  
+
+\ A version that acted more like `fseek`, from C, in that it
+\ accepted `SEEK_SET`, `SEEK_CUR`, and `SEEK_END` could be
+\ build upon these words.
+\ TODO: Test this
 : reposition-file ( ud fileid -- ior ) 
   findex dup >r f.flags flg.eof swap clear
   r@ f.flags @ (stdio) and 0<> if rdrop 2drop ESEEK exit then
-  um/mod
-
-  -1 throw
-; 
+  r@ fundex file-size ?dup if rdrop 2drop 2drop exit then
+  dmin
+  b/buf um/mod swap ( cnt rem )
+  r@ f.end ! ( cnt )
+  r@ f.head @ swap
+  ?dup if 1- for link next then
+  r> f.blk ! 0 ; 
 
 : resize-file ( ud fileid -- ior )
   \ This needs to allocate, do nothing, or free, depending
@@ -1621,7 +1686,7 @@ s" help.txt" r/w open-file throw handle !
     ?dup if r> close-file drop throw then
     ?dup
   while
-    buf1 swap type cr
+    buf1 swap type
   repeat r> close-file throw 2drop ;
 
 : .pos handle @ ." POS: " file-position throw ud. cr ;
@@ -1640,19 +1705,25 @@ buf1 b/buf type cr
 
 handle @ close-file throw
 
-\ s" demo.fth" r/w open-file throw handle !
+\ TODO: Testing reading 1024 bytes, 1023 bytes, 1024 bytes 
+\ after reading X bytes, 0 bytes, 2000 bytes, and writing as
+\ well.
+
+s" demo.fth" r/w open-file throw handle !
 : yes ( c-addr u file n )
   1- for
+    ." POS: " 0 pick file-position throw ud. cr
     2 pick 2 pick 2 pick write-file throw
   next
   drop 2drop ;
 \ s" ABCD" handle @ write-file throw
-\ s" 1234567890" handle @ 1000 yes
-\ handle @ close-file throw
-
+ s" 1234567890" handle @ 1000 yes
+ handle @ close-file throw
 
 [then]
 
 dos
 {ffs} +order
+
+
 

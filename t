@@ -24,6 +24,11 @@ reset
 run << EOF
 dos
 df
+ed 1.txt
++ .( TEST PROGRAM ) cr
++ 
+s q
+rename 1.txt 2.txt
 mkdir a
 mkdir b
 mkdir c
