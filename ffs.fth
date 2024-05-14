@@ -284,6 +284,10 @@ defined dmin 0= [if]
        0 0 d< if       -1 exit then
                         1 ;
 
+defined holds 0= [if]
+: holds begin dup while 1- 2dup + c@ hold repeat 2drop ;
+[then]
+
 defined spaces 0= [if]
 : spaces begin ?dup 0> while bl emit 1- repeat ;
 [then]
@@ -1399,9 +1403,6 @@ defined eforth 0= [if]
 
 wordlist constant {required}
 
-defined holds 0= [if]
-: holds begin dup while 1- 2dup + c@ hold repeat 2drop ;
-[then]
 : entry ( cs -- f )
   dup >r find nip ?dup if rdrop exit then
   <# r> count holds s" create  " holds 0 0 #> evaluate 0 ;
@@ -1436,13 +1437,12 @@ r/o w/o or constant r/w
 : (stdio) flg.stdout flg.stdin or ;
 : stdio r/w (stdio) or ;
 : fam? dup stdio invert and 0<> throw ; ( fam -- fam )
-
 : bin fam? ; ( fam -- fam )
 
 : ferror findex f.flags @ flg.error and 0<> ; ( handle -- f )
-: fopened? findex f.flags @ flg.used and 0<> ; ( handle -- f )
-: feof? findex f.flags @ flg.eof and 0<> ; ( handle -- f )
-: fail findex f.flags flg.error swap set ; ( handle -- )
+\ : fopened? findex f.flags @ flg.used and 0<> ; 
+\ : feof? findex f.flags @ flg.eof and 0<> ; ( handle -- f )
+\ : fail findex f.flags flg.error swap set ; ( handle -- )
 
 : nlast? f.blk @ link blk.end = ;
 : limit? dup nlast? if f.end @ exit then drop b/buf ;
@@ -1458,6 +1458,7 @@ r/o w/o or constant r/w
     r@ f.blk @ link r@ f.blk !
   then
   rdrop -1 ;
+: stretch f.pos @ b/buf swap - ;
 
 : open-file ( c-addr u fam -- fileid ior ) 
   fam?
@@ -1562,14 +1563,12 @@ r/o w/o or constant r/w
     dup >r cmove r>
     dup r@ nblock
     0= if 
-      \ TODO: Test this is correct
       rdrop nip nip r> min 0 exit
     then
     /string
   repeat
   rdrop drop r> 0 ;
 
-\ TODO: test this
 : read-line ( c-addr u fileid -- u flag ior ) 
   over >r >r
   begin
@@ -1585,7 +1584,6 @@ r/o w/o or constant r/w
   2drop
   rdrop r> 0 0 ; 
 
-: stretch f.pos @ b/buf swap - ;
 : write-file ( c-addr u fileid -- ior ) 
   findex dup f.flags @ flg.wen and 
   0= if 2drop drop EPERM exit then
@@ -1622,19 +1620,17 @@ r/o w/o or constant r/w
 \ A version that acted more like `fseek`, from C, in that it
 \ accepted `SEEK_SET`, `SEEK_CUR`, and `SEEK_END` could be
 \ build upon these words.
-\ TODO: Test this
 : reposition-file ( ud fileid -- ior ) 
   findex dup >r f.flags flg.eof swap clear
   r@ f.flags @ (stdio) and 0<> if rdrop 2drop ESEEK exit then
   r@ fundex file-size ?dup if rdrop 2drop 2drop exit then
   dmin
   b/buf um/mod swap ( cnt rem )
-  r@ f.end ! ( cnt )
+  r@ f.pos ! ( cnt )
   r@ f.head @ swap
   ?dup if 1- for link next then
   r> f.blk ! 0 ; 
 
-\ TODO: Testing...this almost works...
 : resize-file ( ud fileid -- ior )
   findex >r
   r@ f.flags @ w/o and 0= if rdrop 2drop EPERM exit then
@@ -1742,12 +1738,15 @@ s" demo.fth" r/w open-file throw handle !
  s" 1234567890" handle @ 1000 yes
  handle @ close-file throw
 
-
 ls
 
-s" help.txt" r/w open-file throw handle !
-100 0 handle @ resize-file throw
-ls
+\ s" help.txt" r/w open-file throw handle !
+\ 100 0 handle @ resize-file throw
+\ ls
+
+\ : setf ( du handle -- )
+\  dup >r reposition-file throw
+\  r> file-position throw ." pos: " ud. cr ;
 
 [then]
 
