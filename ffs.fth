@@ -1446,7 +1446,7 @@ r/o w/o or constant r/w
 
 : nlast? f.blk @ link blk.end = ;
 : limit? dup nlast? if f.end @ exit then drop b/buf ;
-: remaining dup >r f.pos @ r> limit? swap - ;
+: remaining dup >r f.pos @ r> limit? swap - 0 max ;
 : nblock ( u findex -- f )
   >r r@ f.pos +!
   r@ f.pos @ r@ limit? >= if
@@ -1563,7 +1563,7 @@ r/o w/o or constant r/w
     dup r@ nblock
     0= if 
       \ TODO: Test this is correct
-      rdrop nip r> min 0 exit
+      rdrop nip nip r> min 0 exit
     then
     /string
   repeat
@@ -1646,8 +1646,8 @@ r/o w/o or constant r/w
     drop 2drop rdrop 0 exit
   then
   0< if \ Shrink
-    b/buf um/mod
-    dup 0= if 1+ then r@ f.blk @ btruncate
+    b/buf um/mod 1+ 
+    ?dup if r@ f.blk @ btruncate then 
     r@ f.end !
 
     \ After `resize-file` `file-position` is unspecified, we
@@ -1689,9 +1689,7 @@ drop
 
 \ TODO: Move this test code to `t`
 
-create buf1 b/buf allot buf1 b/buf erase
-variable handle 0 handle !
-s" help.txt" r/w open-file throw handle !
+create buf1 b/buf 2* allot buf1 b/buf 2* erase
 
 : ncat
   r/o open-file throw
@@ -1702,11 +1700,17 @@ s" help.txt" r/w open-file throw handle !
     ?dup
   while
     buf1 swap type
-  repeat r> close-file throw 2drop ;
+  repeat r> close-file throw ;
 
-: .pos handle @ ." POS: " file-position throw ud. cr ;
 
 s" help.txt" ncat
+
+variable handle 0 handle !
+s" help.txt" r/w open-file throw handle !
+
+: .pos handle @ ." POS: " file-position throw ud. cr 
+\  handle @ findex .fhandle
+;
 
 .pos
 buf1 b/buf handle @ read-file throw ." READ: " u. cr .pos
@@ -1717,6 +1721,9 @@ buf1 b/buf handle @ read-file throw ." READ: " u. cr .pos
 .( === READ IN === ) cr
 buf1 b/buf type cr
 .( === READ IN === ) cr
+buf1 b/buf 300 + handle @ read-file throw ." READ: " u. cr .pos
+.( === READ IN === ) cr
+buf1 b/buf 300 + type cr
 
 handle @ close-file throw
 
@@ -1727,7 +1734,7 @@ handle @ close-file throw
 s" demo.fth" r/w open-file throw handle !
 : yes ( c-addr u file n )
   1- for
-    ." POS: " 0 pick file-position throw ud. cr
+\    ." POS: " 0 pick file-position throw ud. cr
     2 pick 2 pick 2 pick write-file throw
   next
   drop 2drop ;
@@ -1735,10 +1742,15 @@ s" demo.fth" r/w open-file throw handle !
  s" 1234567890" handle @ 1000 yes
  handle @ close-file throw
 
+
+ls
+
+s" help.txt" r/w open-file throw handle !
+100 0 handle @ resize-file throw
+ls
+
 [then]
 
 dos
 {ffs} +order
-
-
 
