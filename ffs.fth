@@ -727,17 +727,18 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
 \ list can be appended. It could set it intelligently 
 \ however...
 : fat-append fat-end reserve save ; ( blk file -- )
+
 : contiguous? ( blk n -- f : is contiguous range free? )
   begin
     ?dup
   while
-    over link blk.free <> if 2drop 0 exit then
+    over >fat blk.free <> if 2drop 0 exit then
     1- swap 1+ swap
   repeat drop -1 ;
 : contiguous ( n -- blk f : find contiguous slab )
   ?dup 0= if 0 0 exit then
   >r
-  0
+  dirstart 1+
   begin
     dup end @ <
   while
@@ -1633,30 +1634,44 @@ r/o w/o or constant r/w
   ?dup if 1- for link next then
   r> f.blk ! 0 ; 
 
+\ TODO: Testing...this almost works...
 : resize-file ( ud fileid -- ior )
-  \ This needs to allocate, do nothing, or free, depending
-  \ on the situation.
   findex >r
-  r@ f.flags @ (stdio) and 0<> if 
-    rdrop 2drop 0 0 ESEEK exit 
+  r@ f.flags @ w/o and 0= if rdrop 2drop EPERM exit then
+  r@ f.flags @ (stdio) and if rdrop 2drop ESEEK exit then
+  r@ fundex file-length ?dup if 
+    rdrop >r 2drop 2drop r> exit 
   then
-  r@ fundex file-position 
-  ?dup if rdrop 2>r >r 2drop r> 2r> exit then
-  2>r 2dup 2r> d- dsignum dup 0= if \ Do nothing...
+  2>r 2dup 2r> d- dsignum dup 0= if
     drop 2drop rdrop 0 exit
   then
-  \ TODO: Get this working, it's nonsense
-\  -1 throw
-  0< if \ Truncate
-    b/buf um/mod dup r@ f.head @ btruncate
+  0< if \ Shrink
+    b/buf um/mod
+    dup 0= if 1+ then r@ f.blk @ btruncate
     r@ f.end !
-    \ TODO: Set f.blk/f.end
-    rdrop
-    0
+
+    \ After `resize-file` `file-position` is unspecified, we
+    \ could improve this but the current behavior is allowed
+    \ by the standard.
+    r@ f.head @ r@ f.blk !
+    0 r@ f.pos !
+
+    r> fundex flush-file
     exit
   then \ Grow
-  b/buf um/mod dup ballocs r@ f.head @ fat-append
-  r> f.end ! ;
+  r@ fundex file-length ?dup if \ Get length...again
+    rdrop >r 2drop 2drop r> exit
+  then
+  d- b/buf um/mod ?dup if
+    ballocs r@ f.head @ fat-append
+  then
+  r@ f.end +! r@ f.end @ b/buf > if
+    balloc? 0= if rdrop EFULL exit then
+    r@ f.head @ fat-append
+    b/buf negate r@ f.end +!
+  then
+  r@ fundex flush-file
+  rdrop ;
 
 defined eforth 0= [if]
 \ File Words Test
