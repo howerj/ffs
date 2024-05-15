@@ -188,32 +188,13 @@
 \ <https://stackoverflow.com/questions/4586972>, which will be
 \ very slow on the SUBLEQ system.
 \
-\ Some file system features there are is no intention to ever
-\ implement (such as hard or symbolic links).
-\
-\ The following is a list of features that I do have the
-\ intention of implementing:
-\
-\ * The File Access Methods
-\ (see https://forth-standard.org/standard/file), which can
-\ be built upon this file system. One minor modification would
-\ be required in that the number of bytes in the last allocated
-\ block would need to be stored in the file meta-data.
-\ * Using multiple FAT blocks, this would raise the amount of
-\ data that could be stored in the file system.
-\ * Various optimizations and improvements to the SUBLEQ eForth
-\ version, including merging this code back into
-\ <https://github.com/howerj/subleq>. More blocks could be
-\ mapped in the FAT table, and areas that should not be touched
-\ marked as being special. This would allow us to make a 
-\ special file that contained the SUBLEQ code in it.
+\ Some file system features there is no intention to ever
+\ implement (such as hard or symbolic links), partly due to
+\ file system limitations and partly due to a lack of need.
 \
 \ TODO: 16 byte directory entires, for 64 entries per dir
 \ (11 byte dir names...)
 \ TODO: Multiple FAT blocks
-\ TODO: Better Subleq eForth mapping
-\ TODO: Rewrite utilities using the new `read-file` and
-\ `write-file` utilities.
 \ TODO: Better path parsing?
 \ TODO: Primitive journal? Commit changes to temp blocks and
 \ swap out?
@@ -432,6 +413,7 @@ $FFFF constant blk.free     \ Block is free to use
  8 constant maxdir          \ Maximum directory depth
 b/buf constant #rem         \ Default Remaining/Used bytes
 create dirstk maxdir cells allot dirstk maxdir cells erase
+variable key-buf \ For `key-file` and `emit-file`
 
 : namebuf: create here maxname dup allot blank does> maxname ;
 namebuf: namebuf
@@ -605,7 +587,7 @@ cell 2 = little-endian and [if]
   free? 0= if -1 0 exit then
   dup blk.end swap reserve save -1 ;
 : balloc ( -- blk : allocate single block )
-  balloc? 0= EFULL error ;
+  balloc? 0= EFULL error dup fblk ;
 : btally ( blk-type -- n )
   0 fat addr? b/buf 2/ 1- for
     dup 16@ 3 pick = if 
@@ -697,8 +679,7 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
 
 \ http://stackoverflow.com/questions/10564491
 \ https://www.lammertbies.nl/comm/info/crc-calculation.html
-: ccitt ( crc c-addr -- crc : Poly. 0x1021 AKA "x16+x12+x5+1" )
-  c@                         ( get char )
+: ccitt ( crc ch -- crc : Poly. 0x1021 AKA "x16+x12+x5+1" )
   limit over 8 rshift xor    ( crc x )
   dup  4  rshift xor         ( crc x )
   dup  5  lshift limit xor   ( crc x )
@@ -706,7 +687,8 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
   swap 8  lshift limit xor ; ( crc )
 : crc ( c-addr u -- ccitt : 16 bit CCITT CRC )
   $FFFF -rot
-  begin ?dup while >r tuck ccitt swap r> +string repeat drop ;
+  begin ?dup while >r tuck c@ 
+  ccitt swap r> +string repeat drop ;
 
 : link-load [ ' +load ] literal apply ; ( file -- )
 : link-list [ ' +list ] literal apply ; ( file -- )
@@ -1185,6 +1167,7 @@ variable line 0 line !
 \ : wc ;
 
 {edlin} +order
+\ TODO: Round up block size if needed
 : edit ro? narg (create) dup edlin ; ( "file" -- )
 {edlin} -order
 
@@ -1372,13 +1355,18 @@ defined eforth 0= [if]
 \
 \ TODO: Optionally allow directories to be opened up
 \ TODO: Open memory as a file.
+\ TODO: Move so the functions can be used in the utilities
 \
 
+flg.ren constant r/o
+flg.wen constant w/o
+r/o w/o or constant r/w
+
 : set tuck @ or swap ! ; ( u a -- )
-: toggle tuck @ xor swap ! ; ( u a -- )
 : clear tuck @ swap invert and swap ! ; ( u a -- )
+\ : toggle tuck @ xor swap ! ; ( u a -- )
+
 : ferase findex fhandle-size erase ;
-: last? link blk.end = ; ( blk -- f )
 
 : flag swap if emit exit then drop ." -" ; ( flg ch -- )
 : .flag
@@ -1430,19 +1418,14 @@ wordlist constant {required}
   dup reqbuf c!
   reqbuf 1+ swap cmove ;
 
-flg.ren constant r/o
-flg.wen constant w/o
-r/o w/o or constant r/w
-
 : (stdio) flg.stdout flg.stdin or ;
 : stdio r/w (stdio) or ;
 : fam? dup stdio invert and 0<> throw ; ( fam -- fam )
-: bin fam? ; ( fam -- fam )
 
 : ferror findex f.flags @ flg.error and 0<> ; ( handle -- f )
 \ : fopened? findex f.flags @ flg.used and 0<> ; 
 \ : feof? findex f.flags @ flg.eof and 0<> ; ( handle -- f )
-\ : fail findex f.flags flg.error swap set ; ( handle -- )
+: fail f.flags flg.error swap set ; ( findex -- )
 
 : nlast? f.blk @ link blk.end = ;
 : limit? dup nlast? if f.end @ exit then drop b/buf ;
@@ -1460,6 +1443,7 @@ r/o w/o or constant r/w
   rdrop -1 ;
 : stretch f.pos @ b/buf swap - ;
 
+: bin fam? ; ( fam -- fam )
 : open-file ( c-addr u fam -- fileid ior ) 
   fam?
   >r ncopy namebuf s" ." fcopy findbuf equate 0= if 
@@ -1472,6 +1456,8 @@ r/o w/o or constant r/w
   namebuf peekd dir-find dup 0< if 
     rdrop drop -1 EFILE exit 
   then
+  \ We might want to be able to open up directories, at least
+  \ in a read-only manner...
   peekd over dir? if rdrop drop 0 ENFIL exit then
   take 0= if rdrop 2drop -1 EHAND exit then
   dup r> swap >r >r
@@ -1488,16 +1474,16 @@ r/o w/o or constant r/w
   r> open-file ; 
 : flush-file ( fileid -- ior )
   save
-  dup ferror if 2drop EHAND exit then
+  dup ferror if drop EHAND exit then
   findex >r
   r@ f.flags @ flg.used and 0= if rdrop EHAND exit then
   r@ f.end @ r@ f.dblk @ r@ f.dline @ dirent-rem!
   rdrop 0 ;
 : close-file ( fileid -- ior )
   dup findex f.flags @ flg.used and 0= if drop EHAND exit then
-  dup flush-file ?dup if nip exit then ferase 0 ; 
+  dup flush-file swap ferase ;
 : file-size ( fileid -- ud ior ) 
-  dup ferror if 2drop 0 0 EHAND exit then
+  dup ferror if drop 0 0 EHAND exit then
   findex dup f.head @ bcount swap 
   f.end @ >r b/buf um* r> b/buf swap - 0 d- 0 ; 
 : refill query -1 ; ( -- flag )
@@ -1525,9 +1511,9 @@ r/o w/o or constant r/w
   movebuf peekd dir-find 0>= if rdrop EEXIS exit then
   findbuf peekd r> dirent-name! 0 ;
 : delete-file ( c-addr u -- ior )
- ncopy 0 [ ' (rm) ] literal catch ?dup if nip then ; 
+  ncopy 0 [ ' (rm) ] literal catch ?dup if nip then ; 
 : file-position ( fileid -- ud ior ) 
-  dup ferror if 2drop 0 0 EHAND exit then
+  dup ferror if drop 0 0 EHAND exit then
   findex >r
   r@ f.flags @ (stdio) and 0<> if rdrop 0 0 ESEEK exit then
   0 r@ f.head @ begin
@@ -1539,6 +1525,7 @@ r/o w/o or constant r/w
   b/buf um*
   r@ f.pos @ 0 d+ rdrop 0 ;
 : file-length ( fileid -- ud ior )
+  dup ferror if drop 0 0 EHAND exit then
   findex >r
   r@ f.flags @ (stdio) and if rdrop 0 0 EPERM exit then
   r@ f.head @ bcount 1- b/buf um*
@@ -1549,6 +1536,7 @@ r/o w/o or constant r/w
   close-file 0 swap ;
 
 : read-file ( c-addr u fileid -- u ior )
+  dup ferror if 2drop drop 0 0 EHAND exit then
   over >r >r 2dup erase r>
   findex dup f.flags @ flg.ren and
   0= if rdrop 2drop drop 0 EPERM exit then
@@ -1570,6 +1558,7 @@ r/o w/o or constant r/w
   rdrop drop r> 0 ;
 
 : read-line ( c-addr u fileid -- u flag ior ) 
+  dup ferror if 2drop drop 0 0 EHAND exit then
   over >r >r
   begin
     ?dup
@@ -1585,6 +1574,7 @@ r/o w/o or constant r/w
   rdrop r> 0 0 ; 
 
 : write-file ( c-addr u fileid -- ior ) 
+  dup ferror if 2drop drop EHAND exit then
   findex dup f.flags @ flg.wen and 
   0= if 2drop drop EPERM exit then
   dup f.flags @ flg.stdout and if rdrop drop type 0 exit then
@@ -1594,7 +1584,7 @@ r/o w/o or constant r/w
   while ( c-addr u )
      r@ stretch 0= if 
        r@ nlast? if
-         balloc? 0= if 2drop rdrop EFULL exit then
+         balloc? 0= if 2drop r> fail EFULL exit then
          r@ f.blk @ fat-append
        then
        r@ f.blk @ link r@ f.blk !
@@ -1621,6 +1611,7 @@ r/o w/o or constant r/w
 \ accepted `SEEK_SET`, `SEEK_CUR`, and `SEEK_END` could be
 \ build upon these words.
 : reposition-file ( ud fileid -- ior ) 
+  dup ferror if 2drop drop EHAND exit then
   findex dup >r f.flags flg.eof swap clear
   r@ f.flags @ (stdio) and 0<> if rdrop 2drop ESEEK exit then
   r@ fundex file-size ?dup if rdrop 2drop 2drop exit then
@@ -1632,6 +1623,7 @@ r/o w/o or constant r/w
   r> f.blk ! 0 ; 
 
 : resize-file ( ud fileid -- ior )
+  dup ferror if 2drop drop EHAND exit then
   findex >r
   r@ f.flags @ w/o and 0= if rdrop 2drop EPERM exit then
   r@ f.flags @ (stdio) and if rdrop 2drop ESEEK exit then
@@ -1662,16 +1654,25 @@ r/o w/o or constant r/w
     ballocs r@ f.head @ fat-append
   then
   r@ f.end +! r@ f.end @ b/buf > if
-    balloc? 0= if rdrop EFULL exit then
+    balloc? 0= if r> fail EFULL exit then
     r@ f.head @ fat-append
     b/buf negate r@ f.end +!
   then
   r@ fundex flush-file
   rdrop ;
 
+: key-file ( file-id -- key )
+  >r key-buf 1 r> read-file 0<> swap 1 <> or if -1 exit then
+  key-buf c@ ;
+
+: emit-file ( ch file-id -- ior )
+  swap key-buf c! >r key-buf 1 r> write-file ;
+
+
 defined eforth 0= [if]
-\ File Words Test
+
 s" ." r/w open-file throw ( open special file '.' )
+\ File Words Test
 \ TODO: Read/Write from `xt` and parameter.
 \ A way of reading from a random source would be neat, as well
 \ as an equivalent of /dev/null. This could be handled more
@@ -1682,6 +1683,8 @@ dup constant stdin
 dup constant stdout
 dup constant stderr
 drop
+
+
 
 \ TODO: Move this test code to `t`
 
@@ -1747,6 +1750,19 @@ ls
 \ : setf ( du handle -- )
 \  dup >r reposition-file throw
 \  r> file-position throw ." pos: " ud. cr ;
+
+
+: (cksum) ( file-id -- cksum )
+  >r
+  $FFFF
+  begin r@ key-file dup 0>= while ccitt repeat
+  drop rdrop ;
+
+: cksum
+  token count r/o open-file throw
+  dup (cksum) u.
+  close-file throw ;
+
 
 [then]
 
