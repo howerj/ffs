@@ -1,7 +1,8 @@
 CFLAGS=-std=c99 -Wall -Wextra -pedantic -O2 -fwrapv
 SRC=ffs.fth
+IMAGE=subleq.dec
 
-.PHONY: all default help run dump clean disk subleq-ffs
+.PHONY: all default help run dump clean disk forth 
 
 default all: help
 
@@ -17,8 +18,8 @@ help:
 	@echo
 	@echo "* run   : run gforth on '${SRC}'"
 	@echo "* dump  : make 'ffs.fb' and hexdump it"
-	@echo "* forth : run unaltered SUBLEQ eFORTH"
-	@echo "* disk  : make a disk image using '${SRC}' for SUBLEQ eFORTH"
+	@echo "* forth : run unaltered SUBLEQ eFORTH using '${IMAGE}'"
+	@echo "* disk  : make a disk image using '${SRC}' and '${IMAGE}' for SUBLEQ eFORTH"
 	@echo "* clean : BANG AND THE DIRT IS GONE"
 	@echo
 	@echo "For documentation please see '${SRC}' or 'readme.md'"
@@ -35,15 +36,15 @@ dump: ffs.fb
 
 subleq: subleq.c
 
-forth: subleq subleq.dec
-	./subleq subleq.dec
+forth: subleq ${IMAGE}
+	./subleq ${IMAGE}
 
 disk: subleq disk.dec
 	./subleq disk.dec _disk.dec
 	mv _disk.dec disk.dec
 
-disk.dec: subleq subleq.dec ${SRC}
-	./subleq subleq.dec $@ < ${SRC}
+disk.dec: subleq ${IMAGE} ${SRC}
+	./subleq ${IMAGE} $@ < ${SRC}
 
 clean:
 	git clean -dffx

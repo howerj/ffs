@@ -31,6 +31,9 @@ pwd, tree, cp, rename, cat, hexdump, more, df, halt, fdisk,
 stat.
 * Full file path parsing is not available and most commands
 operate only using the current working directory.
+* The file system is designed to run as a single user system,
+there is no locking and global variables are used.
+* Only one file system can be mounted at a time.
 
 ## Examples
 
@@ -46,12 +49,12 @@ An example session:
 	mkdir example
 	cd example
 	pwd
-	edit test.fth
+	edit test.fth \ Start editor commands
 	+ .( FIRST BLOCK ) cr
 	n
 	+ .( SECOND BLOCK ) cr
 	s
-	q
+	q     \ Back to "DOS"
 	ls
 	exe test.fth
 	df

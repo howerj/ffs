@@ -23,15 +23,23 @@ reset
 
 run << EOF
 dos
+df
+ed 1.txt
++ .( TEST PROGRAM ) cr
++ 
+s q
+rename 1.txt 2.txt
 mkdir a
 mkdir b
 mkdir c
 rmdir b
 mkdir b
 fallocate d 10
-move d b
-move a b
-move c b
+mv d b
+mv a b
+mv c b
 tree
 deltree b
+df
+tree
 EOF
