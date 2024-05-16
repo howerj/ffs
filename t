@@ -35,10 +35,11 @@ mkdir c
 rmdir b
 mkdir b
 fallocate d 10
-move d b
-move a b
-move c b
+mv d b
+mv a b
+mv c b
 tree
 deltree b
 df
+tree
 EOF
