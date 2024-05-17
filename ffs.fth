@@ -341,12 +341,13 @@ defined search 0= [if]
   2drop rdrop rdrop 0 ;
 
 : untype ( c-addr u -- remaining ior )
+  dup >r
   begin
     dup
   while
     over key swap c!
     +string
-  repeat nip 0 ;
+  repeat 2drop r> 0 ;
 
 defined b/buf 0= [if] 1024 constant b/buf [then]
 defined d>s 0= [if] : d>s drop ; [then]
@@ -473,7 +474,7 @@ create newline 2 c, $D c, $A c, align
   4 constant flg.wen
   8 constant flg.stdin
  16 constant flg.stdout
- 32 constant flg.error \ TODO: Use this to indicate problems
+ 32 constant flg.error
  64 constant flg.eof
 128 constant flg.mem \ Reserved for memory mapped files
 
@@ -727,7 +728,6 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
 \ list can be appended. It could set it intelligently 
 \ however...
 : fat-append fat-end reserve save ; ( blk file -- )
-
 : contiguous? ( blk n -- f : is contiguous range free? )
   begin
     ?dup
@@ -1018,10 +1018,6 @@ variable line 0 line !
 \ TODO: Move so the functions can be used in the utilities
 \
 
-flg.ren constant r/o
-flg.wen constant w/o
-r/o w/o or constant r/w
-
 : set tuck @ or swap ! ; ( u a -- )
 : clear tuck @ swap invert and swap ! ; ( u a -- )
 \ : toggle tuck @ xor swap ! ; ( u a -- )
@@ -1079,7 +1075,7 @@ wordlist constant {required}
   reqbuf 1+ swap cmove ;
 
 : (stdio) flg.stdout flg.stdin or ;
-: stdio r/w (stdio) or ;
+: stdio flg.wen flg.ren or (stdio) or ;
 : fam? dup stdio invert and 0<> throw ; ( fam -- fam )
 
 : ferror findex f.flags @ flg.error and 0<> ; ( handle -- f )
@@ -1103,7 +1099,14 @@ wordlist constant {required}
   rdrop -1 ;
 : stretch f.pos @ b/buf swap - ;
 
-\ TODO: Add to forth vocab for subleq only
+defined eforth [if]
+forth-wordlist +order definitions
+[then]
+
+flg.ren constant r/o    ( -- fam )
+flg.wen constant w/o    ( -- fam )
+r/o w/o or constant r/w ( -- fam )
+
 : bin fam? ; ( fam -- fam )
 : open-file ( c-addr u fam -- fileid ior ) 
   fam?
@@ -1228,17 +1231,29 @@ wordlist constant {required}
       nip rdrop r> swap - swap rot drop 0 swap exit
     then
     0= if nip rdrop r> swap - 0 0 exit then
-    over c@ $A = if nip rdrop r> swap - -1 0 exit then
+    \ For a newline we get `$A` in SUBLEQ eForth (Linux) and 
+    \ Windows Gforth 0.7.0, `$D` in Linux Gforth 0.7.3, so we
+    \ need to handle both cases. We should really be ignoring
+    \ `$D` or adding both `$A` and `$D` to the buffer.
+    \ 
+    \ The code really should be:
+    \ 
+    \   over c@ $A = or if  
+    \     nip rdrop r> swap - -1 0 exit then
+    \   over c@ $D <> if +string then
+    \ 
+    over c@ dup $D = swap $A = or if 
+      nip rdrop r> swap - -1 0 exit then
     +string
   repeat
-  2drop
+  drop
   rdrop r> 0 0 ; 
 
 : write-file ( c-addr u fileid -- ior ) 
   dup ferror if 2drop drop EHAND exit then
   findex dup f.flags @ flg.wen and 
   0= if 2drop drop EPERM exit then
-  dup f.flags @ flg.stdout and if rdrop drop type 0 exit then
+  dup f.flags @ flg.stdout and if drop type 0 exit then
   >r
   begin
     ?dup
@@ -1263,6 +1278,13 @@ wordlist constant {required}
   repeat
   r@ fundex flush-file throw
   rdrop drop 0 ;
+
+: key-file ( file-id -- key )
+  >r key-buf 1 r> read-file 0<> swap 1 <> or if -1 exit then
+  key-buf c@ ;
+
+: emit-file ( ch file-id -- ior )
+  swap key-buf c! >r key-buf 1 r> write-file ;
 
 : write-line ( c-addr u fileid -- ior )
   dup >r write-file ?dup if rdrop exit then
@@ -1322,14 +1344,13 @@ wordlist constant {required}
   r@ fundex flush-file
   rdrop ;
 
-: key-file ( file-id -- key )
-  >r key-buf 1 r> read-file 0<> swap 1 <> or if -1 exit then
-  key-buf c@ ;
+{ffs} +order definitions
 
-: emit-file ( ch file-id -- ior )
-  swap key-buf c! >r key-buf 1 r> write-file ;
-
-
+: (cksum) ( file-id -- cksum )
+  >r
+  $FFFF
+  begin r@ key-file dup 0>= while ccitt repeat
+  drop rdrop ;
 
 {dos} +order definitions
 
@@ -1348,6 +1369,10 @@ wordlist constant {required}
    ." BAD BLKS:    " blk.bad-blk btally u. cr 
    ." LARGEST CONTIGUOUS BLOCK: " largest u. cr ;
 
+: cksum
+  token count r/o open-file throw
+  dup (cksum) u.
+  close-file throw ;
 : fsync save-buffers ;
 : halt save 1 exit-shell ! only forth ;
 : ls peekd .dir ; 
@@ -1563,6 +1588,7 @@ edit help.txt
 +
 + cat <FILE>: display a file
 + cd / chdir <DIR>: change working directory to <DIR>
++ cksum <FILE>: Compute and print CRC (16-bit CCITT) of file
 + cls: clear screen
 + cmp / diff <FILE> <FILE>: compare two files
 + cp / copy <FILE1> <FILE2>: copy <FILE1> to new <FILE2>
@@ -1680,8 +1706,6 @@ defined eforth 0= [if]
 {ffs} +order definitions
 [then]
 
-defined eforth 0= [if]
-s" ." r/w open-file throw ( open special file '.' )
 \ File Words Test
 \ TODO: Read/Write from `xt` and parameter.
 \ A way of reading from a random source would be neat, as well
@@ -1689,90 +1713,9 @@ s" ." r/w open-file throw ( open special file '.' )
 \ generally by allowing reading and writing from and to a
 \ a callback that could provide that functionality instead of
 \ special casing things.
+s" ." r/w open-file throw ( open special file '.' )
 dup constant stdin
 dup constant stdout
 dup constant stderr
 drop
-
-\ TODO: Move this test code to `t`
-
-create buf1 b/buf 2* allot buf1 b/buf 2* erase
-
-: ncat
-  r/o open-file throw
-  >r
-  begin
-    buf1 c/blk r@ read-file
-    ?dup if r> close-file drop throw then
-    ?dup
-  while
-    buf1 swap type
-  repeat r> close-file throw ;
-
-
-s" help.txt" ncat
-
-variable handle 0 handle !
-s" help.txt" r/w open-file throw handle !
-
-: .pos handle @ ." POS: " file-position throw ud. cr 
-\  handle @ findex .fhandle
-;
-
-.pos
-buf1 b/buf handle @ read-file throw ." READ: " u. cr .pos
-.( === READ IN === ) cr
-buf1 b/buf type cr
-.( === READ IN === ) cr
-buf1 b/buf handle @ read-file throw ." READ: " u. cr .pos
-.( === READ IN === ) cr
-buf1 b/buf type cr
-.( === READ IN === ) cr
-buf1 b/buf 300 + handle @ read-file throw ." READ: " u. cr .pos
-.( === READ IN === ) cr
-buf1 b/buf 300 + type cr
-
-handle @ close-file throw
-
-\ TODO: Testing reading 1024 bytes, 1023 bytes, 1024 bytes 
-\ after reading X bytes, 0 bytes, 2000 bytes, and writing as
-\ well.
-
-s" demo.fth" r/w open-file throw handle !
-: yes ( c-addr u file n )
-  1- for
-\    ." POS: " 0 pick file-position throw ud. cr
-    2 pick 2 pick 2 pick write-file throw
-  next
-  drop 2drop ;
-\ s" ABCD" handle @ write-file throw
- s" 1234567890" handle @ 1000 yes
- handle @ close-file throw
-
-ls
-
-\ s" help.txt" r/w open-file throw handle !
-\ 100 0 handle @ resize-file throw
-\ ls
-
-\ : setf ( du handle -- )
-\  dup >r reposition-file throw
-\  r> file-position throw ." pos: " ud. cr ;
-
-: (cksum) ( file-id -- cksum )
-  >r
-  $FFFF
-  begin r@ key-file dup 0>= while ccitt repeat
-  drop rdrop ;
-
-: cksum
-  token count r/o open-file throw
-  dup (cksum) u.
-  close-file throw ;
-
-[then]
-
-dos
-{ffs} +order
-
 
