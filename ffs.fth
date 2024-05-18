@@ -205,8 +205,6 @@
 \ TODO: Better path parsing?
 \ TODO: Glossary for SUBLEQ eForth as a text file, extension
 \ programs for SUBLEQ eForth, ...
-\ TODO: Linear block allocation where possible
-\ TODO: Empty or Zero length files
 \ TODO: Command to dump file system as a series of commands
 \ to build that file system, this can be used in lieu of
 \ defragmenting
@@ -292,6 +290,10 @@ defined /string 0= [if]
 
 : ?\ ?exit postpone \ ;
 \ : ?( ?exit postpone ( ;
+
+: set tuck @ or swap ! ; ( u a -- )
+: clear tuck @ swap invert and swap ! ; ( u a -- )
+\ : toggle tuck @ xor swap ! ; ( u a -- )
 
 : lower? 97 123 within ; ( ch -- f )
 : upper? 65 91 within ; ( ch -- f )
@@ -478,7 +480,25 @@ create newline 2 c, $D c, $A c, align
  64 constant flg.eof
 128 constant flg.mem \ Reserved for memory mapped files
 
-\ Offsets into the file handle structure
+\ Offsets into the file handle structure.
+\
+\ If we wanted or needed to we could add extra fields for
+\ callbacks that would replace the default implementations
+\ of reading, writing, setting and get the file position,
+\ opening closing and resizing a file. This would allow us to
+\ extend the File Access Methods to read from a chunk of
+\ memory (one that could be reallocated) or write to a network
+\ if needed. 
+
+\ This would be useful in conjunction with pseudo
+\ files (Special Files with a pointer to a variable containing
+\ the callbacks that are used to implement that file) so we
+\ could make a file that spat out random data when read, or
+\ acted like it was always full, or contained infinite zeros.
+\
+\ It would also allow us to remove the special cases of
+\ handling `flg.stdin` and `flg.stdout`.
+\
 : f.flags 0 cells + ; ( File Flags and Options )
 : f.head 1 cells + ;  ( Head Block of file )
 : f.end  2 cells + ;  ( Bytes in last block )
@@ -811,9 +831,12 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
   #rem r@ 0 dirent-rem!
   r@ r> 0 dirent-blk! 
   save ;
-\ TODO: Prevent finding special dirs, empty file of all spaces
 : dir-find ( c-addr u blk -- line | -1 )
   >r fcopy
+  \ We could extend this to not find much more if needed,
+  \ the next line prevents files beginning with a space (or
+  \ control characters).
+  findbuf drop c@ bl <= if rdrop -1 exit then
   dsl ( skip first line at zero, this contains directory info )
   begin
     dup d/blk <
@@ -971,7 +994,7 @@ variable line 0 line !
 : found? peekd eline? ; ( -- cwd line )
 : dfull? empty? dup eline ! -1 = EDFUL error ; ( blk -- )
 : full? peekd dfull? ; ( -- : is cwd full? )
-: (create) ( -- blk: call narg prior, create or open existing )
+: (create) ( -- blk: call narg prior, create|open existing )
   namebuf peekd dir-find dup 
   0>= if peekd swap dirent-blk@ exit then
   drop
@@ -981,12 +1004,15 @@ variable line 0 line !
   balloc dup link-blank found? dirent-blk!
   [char] F found? dirent-type!
   found? dirent-blk@ ;
+: (round) ( -- : call narg prior, round up file to blk size )
+  namebuf peekd dir-find dup 0< ENFIL error
+  #rem swap peekd swap dirent-rem! ;
 : (mkfile) ( n -- : `narg` should have name in it )
   >r
   namebuf peekd dir-find 0>= EEXIS error
   namebuf found? dirent-name!
-  #rem found? dirent-rem!
-  r> ballocs dup link-blank found? dirent-blk!
+  r@ 0<> #rem and found? dirent-rem!
+  r> dup 0= 1 and + ballocs dup link-blank found? dirent-blk!
   [char] F found? dirent-type! ;
 : (deltree) ( dir -- : recursive delete of directory )
   >r
@@ -1017,10 +1043,6 @@ variable line 0 line !
 \ TODO: Open memory as a file.
 \ TODO: Move so the functions can be used in the utilities
 \
-
-: set tuck @ or swap ! ; ( u a -- )
-: clear tuck @ swap invert and swap ! ; ( u a -- )
-\ : toggle tuck @ xor swap ! ; ( u a -- )
 
 : ferase findex fhandle-size erase ;
 
@@ -1447,7 +1469,7 @@ r/o w/o or constant r/w ( -- fam )
   narg namebuf peekd dir-find dup >r 0< EFILE error
   r> peekd swap dirent-blk@
   r> peekd swap dirent-blk@ (cmp) ;
-: mkfile ro? full? narg 1 (mkfile) ; ( "file" -- )
+: mkfile ro? full? narg 0 (mkfile) ; ( "file" -- )
 : fallocate ro? full? narg integer? (mkfile) ; ( "file" u -- )
 : fgrow ( "file" count -- )
   ro?
@@ -1535,8 +1557,7 @@ r/o w/o or constant r/w ( -- fam )
 \ : wc ;
 
 {edlin} +order
-\ TODO: Round up block size if needed
-: edit ro? narg (create) dup edlin ; ( "file" -- )
+: edit ro? narg (create) (round) dup edlin ; ( "file" -- )
 {edlin} -order
 
 \ Aliases
@@ -1706,13 +1727,6 @@ defined eforth 0= [if]
 {ffs} +order definitions
 [then]
 
-\ File Words Test
-\ TODO: Read/Write from `xt` and parameter.
-\ A way of reading from a random source would be neat, as well
-\ as an equivalent of /dev/null. This could be handled more
-\ generally by allowing reading and writing from and to a
-\ a callback that could provide that functionality instead of
-\ special casing things.
 s" ." r/w open-file throw ( open special file '.' )
 dup constant stdin
 dup constant stdout
