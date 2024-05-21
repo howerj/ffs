@@ -720,10 +720,23 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
   dup  5  lshift limit xor   ( crc x )
   dup  12 lshift limit xor   ( crc x )
   swap 8  lshift limit xor ; ( crc )
-: crc ( c-addr u -- ccitt : 16 bit CCITT CRC )
-  $FFFF -rot
-  begin ?dup while >r tuck c@ 
-  ccitt swap r> +string repeat drop ;
+\ : crc ( c-addr u -- ccitt : 16 bit CCITT CRC )
+\  $FFFF -rot
+\  begin ?dup while >r tuck c@ 
+\  ccitt swap r> +string repeat drop ;
+
+: crc ( b u -- u : calculate ccitt-ffff CRC )
+  $FFFF >r begin ?dup while
+   over c@ r> swap
+   ( CCITT polynomial $1021, or "x16 + x12 + x5 + 1" )
+   over $8 rshift xor ( crc x )
+   dup  $4 rshift xor ( crc x )
+   dup  $5 lshift xor ( crc x )
+   dup  $C lshift xor ( crc x )
+   swap $8 lshift xor ( crc )
+   >r +string
+  repeat r> nip ;
+
 
 : link-load [ ' +load ] literal apply ; ( file -- )
 : link-list [ ' +list ] literal apply ; ( file -- )
@@ -740,8 +753,6 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
   until drop cr ." EOF" ; 
 : fat-end ( blk -- blk : last block in FAT chain )
   begin dup link blk.end = if exit then link again ;
-: resolve ( c-addr u -- dir )
-  ; \ TODO: Turn name into dir/line
 : gc ; \ TODO: Copy FAT nodes
 \ N.B. `fat-append` does not set the appended block to
 \ `blk.end`, `balloc` does however. This is so another linked
@@ -872,6 +883,26 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
 : dir? dirent-type@ [char] D = ; ( dir line -- f )
 : special? dirent-type@ [char] S = ; ( dir line -- f)
 : file? dirent-type@ [char] F = ; ( dir line -- f)
+: ndir ( c-addr u -- u f : parse next file name in path a/b/c )
+  0 -rot
+  begin
+    ?dup
+  while
+    over c@ [char] / = if 2drop -1 exit then
+    rot 1+ -rot
+    +string
+  repeat drop 0 ;
+\ TODO: Implement this, Handle "." and "..", add flag to
+\ indicate ".." used, or not current dir.
+\ : resolve ( c-addr u -- dir line )
+\   peekd -rot 0 -rot
+\   begin
+\    ?dup
+\   while
+\     2dup ndir >r over fcopy r> if
+\     else
+\     then
+\   repeat drop ; 
 : (remove) ( dir line f -- )
   2 pick locked!?
   >r 2dup dir? if
@@ -939,12 +970,10 @@ variable line 0 line !
      set-order words set-order ; 
 : n 0 line ! s vista @ link blk.end = if 
     balloc dup bblk head @ fat-append 
-\ TODO: Call `dirent-rem!` here, and anywhere where we are
-\ increase the block size.
   then
-  vista @ link vista ! l ;
+  vista @ link vista ! ( l ) ;
 : p ( -- : prev block )
-  0 line ! s head @ vista @ previous vista ! l ; 
+  0 line ! s head @ vista @ previous vista ! ( l ) ; 
 : y vista @ >copy ;
 : u vista @ copy> save ;
 : z vista @ addr? b/buf blank ; ( -- : erase current block )
@@ -1180,7 +1209,7 @@ r/o w/o or constant r/w ( -- fam )
   dup f.flags @ flg.stdin and 0<> EPERM error
   f.head @ link-load ; 
 : included ( c-addr u -- )
-  pack reqbuf required? drop reqbuf count
+  -trailing pack reqbuf required? drop reqbuf count
   ncopy namebuf peekd dir-find dup 0< EFILE error
   peekd swap dirent-blk@ link-load ; 
 : include token count included ; ( "file" -- )
@@ -1477,7 +1506,6 @@ r/o w/o or constant r/w ( -- fam )
   namebuf peekd dir-find dup >r 0< ENFIL error
   ballocs dup link-blank peekd r> dirent-blk@ fat-append save ;
 : ftruncate ( "file" count -- )
-\ TODO: Set dirent-rem!
   peekd locked!?
   ro?
   narg integer?
@@ -1557,7 +1585,7 @@ r/o w/o or constant r/w ( -- fam )
 \ : wc ;
 
 {edlin} +order
-: edit ro? narg (create) (round) dup edlin ; ( "file" -- )
+: edit ro? narg (create) dup (round) edlin ; ( "file" -- )
 {edlin} -order
 
 \ Aliases
@@ -1710,10 +1738,6 @@ mkdir bin
 
 forth-wordlist +order definitions
 : dos ( only ) {dos} +order {ffs} +order mount {ffs} -order ;
-defined eforth [if]
-: reboot dos quit ;
-' reboot <quit> !
-[then]
 
 defined eforth 0= [if]
 \ If we are running in eForth we want to add the definitions
@@ -1733,3 +1757,62 @@ dup constant stdout
 dup constant stderr
 drop
 
+( defined eforth ) 0 [if]
+edit login.fth
++ ( A primitive user login system [that is super insecure]. )
++ system +order
++ {ffs} +order
++ wordlist +order definitions
++ wordlist constant users
++ 
++ <ok> @ constant (prompt) ( -- xt : store ok for later use )
++ 
++ variable proceed 0 proceed !
++ : conceal $1B emit ." [8m" ; ( Could also override <emit> )
++ : reveal $1B emit ." [28m" ;
++ : secure users 1 set-order ; ( load password database )
++ : restore only forth definitions decimal (prompt) <ok> ! ;
++ : message ." user: " ; ( -- : prompt asking for user-name )
++ : fail ." Invalid username or password" cr ; ( -- error msg )
++ : success 1 proceed ! ." logged in." ; ( signal success )
++ : pass token count crc ; ( "xxx" -- u : super-secure <_< )
++ : ask ." pass: " conceal query reveal ;
++ : empty depth for aft drop then next ; ( ??? -- )
++ : prompt secure message [ ' ) ] literal <ok> ! ;
++ : get query eval ; ( "xxx" -- : get user name )
++ : retry begin prompt [ ' get ] literal catch 
++   drop empty proceed @ until ;
++ 
++ forth-wordlist +order definitions
++ 
++ \ The user login system presents only a few words to manage
++ \ and use it. "user:", "login" and ".users". They have 
++ \ already been described.
++ \ 
++ \ Missing are words to remove an entry (difficult to add), to
++ \ change a password (easy to add) and the word list used to
++ \ back the database (which could be added easily enough).
++ : user: ( "user" "password" -- : create new user entry )
++ users +order definitions create pass , only forth definitions
++   does> ask @ pass = if restore success exit then fail ;
++ : login 0 proceed ! retry ; ( -- : enter login system )
++ : .users get-order secure words set-order ; ( -- )
++ 
++ user: guest guest
++ user: admin password1
++ user: archer dangerzone
++ user: cyril figgis
++ user: lana stirling
++ .( EFORTH ONLINE ) cr
++ login
+s
+q
+[then]
+
+
+defined eforth [if]
+: reboot dos quit ;
+' reboot <quit> !
+[then]
+
+\ only forth definitions marker [START]
