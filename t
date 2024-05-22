@@ -15,6 +15,7 @@ reset () {
 	make ffs.fb
 }
 
+# TODO: Select gforth or subleq
 run () {
 	make run
 }

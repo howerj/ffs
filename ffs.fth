@@ -209,7 +209,6 @@
 \ to build that file system, this can be used in lieu of
 \ defragmenting
 \
-\
 
 defined (order) 0= [if]
 : (order) ( w wid*n n -- wid*n w n )
@@ -224,7 +223,7 @@ defined (order) 0= [if]
 defined eforth [if]
 system +order
 : wordlist here cell allot 0 over ! ; ( -- wid : alloc wid )
-: quine source type cr ; ' quine <ok> !
+\ : quine source type cr ; ' quine <ok> !
 [else]
 use ffs.fb
 [then]
@@ -569,12 +568,16 @@ cell 2 = little-endian and [if]
 [then]
 
 : fat? dup [ b/buf 2/ fats * ] literal u<= ; ( blk -- blk f )
-: fatidx [ b/buf 2/ ] literal /mod swap ; ( blk -- blk n )
+: decompose [ b/buf 2/ ] literal /mod swap ; ( blk -- blk n )
+: fatidx 
+\   fat? 0= throw
+   fat addr? ; ( blk -- addr )
 : >fat 
   \ TODO: Extra FAT tables go here. They must be protect also,
   \ also prevent freeing and allocating these blocks...
   fat? 0= throw
-  2* fat addr? + 16@ ;
+  2* fatidx + 16@ ;
+: f@t ;
 : linkable 
   dup 1 end 1+ within 
   over >fat blk.lastv u< swap and ; ( blk -- blk f )
@@ -593,7 +596,7 @@ cell 2 = little-endian and [if]
   until drop ;
 
 \ TODO: Modify to support multiple FAT blocks
-: reserve 2* fat addr? + 16! modify ; ( blk blk -- )
+: reserve 2* fatidx + 16! modify ; ( blk blk -- )
 : setrange ( val blk u )
   rot >r
   begin
@@ -607,11 +610,11 @@ cell 2 = little-endian and [if]
 : bblk addr? b/buf blank save ; ( blk -- )
 : fblk addr? b/buf erase save ; ( blk -- )
 : free? ( -- blk f )
-  fat addr? dirstart 1+
+  fatidx dirstart 1+
   begin
     dup end <
   while
-    \ TODO: Modify to support multiple FAT blocks
+    \ TODO: Modify
     2dup 2* + 16@ blk.free = if nip -1 exit then
     1+
   repeat 2drop 0 0 ;
@@ -621,8 +624,8 @@ cell 2 = little-endian and [if]
 : balloc ( -- blk : allocate single block )
   balloc? 0= EFULL error dup fblk ;
 : btally ( blk-type -- n )
-  0 fat addr? b/buf 2/ 1- for
-    \ TODO: Modify to support multiple FAT blocks
+  0 fatidx end 1- for
+    \ TODO: Modify
     dup 16@ 3 pick = if 
      swap 1+ swap
     then
@@ -737,7 +740,6 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
    >r +string
   repeat r> nip ;
 
-
 : link-load [ ' +load ] literal apply ; ( file -- )
 : link-list [ ' +list ] literal apply ; ( file -- )
 : link-blank [ ' bblk ] literal apply ; ( file -- )
@@ -753,7 +755,6 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
   until drop cr ." EOF" ; 
 : fat-end ( blk -- blk : last block in FAT chain )
   begin dup link blk.end = if exit then link again ;
-: gc ; \ TODO: Copy FAT nodes
 \ N.B. `fat-append` does not set the appended block to
 \ `blk.end`, `balloc` does however. This is so another linked
 \ list can be appended. It could set it intelligently 
@@ -951,6 +952,7 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
   2drop ;
 
 \ TODO: Delete block command
+\ TODO: Line oriented editing?
 wordlist constant {edlin}
 {edlin} +order definitions
 variable vista 1 vista ! \ Used to be `scr`
@@ -1757,7 +1759,11 @@ dup constant stdout
 dup constant stderr
 drop
 
-( defined eforth ) 0 [if]
+\ TODO: Call `dos`
+\ TODO: Prevent mount from reloading block if already loaded?
+\ TODO: Calling `login` twice causes problems (`ok` prompt
+\ disappears).
+defined eforth [if]
 edit login.fth
 + ( A primitive user login system [that is super insecure]. )
 + system +order
