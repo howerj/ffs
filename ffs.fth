@@ -199,15 +199,9 @@
 \ implement (such as hard or symbolic links), partly due to
 \ file system limitations and partly due to a lack of need.
 \
-\ TODO: 16 byte directory entires, for 64 entries per dir
-\ (11 byte dir names...)
 \ TODO: Multiple FAT blocks
 \ TODO: Better path parsing?
-\ TODO: Glossary for SUBLEQ eForth as a text file, extension
-\ programs for SUBLEQ eForth, ...
-\ TODO: Command to dump file system as a series of commands
-\ to build that file system, this can be used in lieu of
-\ defragmenting
+\ TODO: File exists word?
 \
 
 defined (order) 0= [if]
@@ -1430,7 +1424,8 @@ r/o w/o or constant r/w ( -- fam )
 : halt save 1 exit-shell ! only forth ;
 : ls peekd .dir ; 
 : dir peekd block? list ;
-: mount init block? load 0 dirp ! dirstart pushd ;
+: mount loaded @ ?exit 
+   init block? load 0 dirp ! dirstart pushd ;
 : freeze 1 read-only ! ;
 : melt 0 read-only ! ;
 : fdisk melt bcheck fmt.init fmt.fat fmt.blks fmt.root mount ; 
@@ -1732,14 +1727,93 @@ edit demo.fth
 + .( HELLO, WORLD ) cr
 + 2 2 + . cr
 q
+edit errors.db
++  -1 FFFF ABORT
++  -2 FFFE ABORT"
++  -3 FFFD stack overflow
++  -4 FFFC stack underflow
++  -5 FFFB return stack overflow
++  -6 FFFA return stack underflow
++  -7 FFF9 do-loops nested too deeply
++  -8 FFF8 dictionary overflow
++  -9 FFF7 invalid memory address
++ -10 FFF6 division by zero
++ -11 FFF5 result out of range
++ -12 FFF4 argument type mismatch
++ -13 FFF3 undefined word
++ -14 FFF2 interpreting a compile-only word
++ -15 FFF1 invalid FORGET
++ -16 FFF0 attempt to use 0-len str. as a name
++ -17 FFEF pictured numeric out. str. overflow
++ -18 FFEE parsed string overflow
++ -19 FFED definition name too long
++ -20 FFEC write to a read-only location
++ -21 FFEB unsupported operation
++ -22 FFEA control structure mismatch
++ -23 FFE9 address alignment exception
++ -24 FFE8 invalid numeric argument
++ -25 FFE7 return stack imbalance
++ -26 FFE6 loop parameters unavailable
++ -27 FFE5 invalid recursion
++ -28 FFE4 user interrupt
++ -29 FFE3 compiler nesting
++ -30 FFE2 obsolescent feature
++ -31 FFE1 >BODY used on non-CREATEd def.
++ -32 FFE0 invalid name arg. (e.g., TO xxx)
++ -33 FFDF block read exception
++ -34 FFDE block write exception
++ -35 FFDD invalid block number
++ -36 FFDC invalid file position
++ -37 FFDB file I/O exception
++ -38 FFDA non-existent file
++ -39 FFD9 unexpected end of file
++ -40 FFD8 wrong BASE in float point convert
++ -41 FFD7 loss of precision
++ -42 FFD6 floating-point divide by zero
++ -43 FFD5 floating-point result out of range
++ -44 FFD4 floating-point stack overflow
++ -45 FFD3 floating-point stack underflow
++ -46 FFD2 floating-point invalid argument
++ -47 FFD1 compilation word list deleted
++ -48 FFD0 invalid POSTPONE
++ -49 FFCF search-order overflow
++ -50 FFCE search-order underflow
++ -51 FFCD compilation word list changed
++ -52 FFCC control-flow stack overflow
++ -53 FFCB exception stack overflow
++ -54 FFCA floating-point underflow
++ -55 FFC9 floating-point unidentified fault
++ -56 FFC8 QUIT
++ -57 FFC7 exception in tx or rx a character
++ -58 FFC6 [ IF ], [ ELSE ], or [ THEN ] exception
++ -59 FFC5 ALLOCATE
++ -60 FFC4 FREE
++ -61 FFC3 RESIZE
++ -62 FFC2 CLOSE-FILE
++ -63 FFC1 CREATE-FILE
++ -64 FFC0 DELETE-FILE
++ -65 FFBF FILE-POSITION
++ -66 FFBE FILE-SIZE
++ -67 FFBD FILE-STATUS
++ -68 FFBC FLUSH-FILE
++ -69 FFBB OPEN-FILE
++ -70 FFBA READ-FILE
++ -71 FFB9 READ-LINE
++ -72 FFB8 RENAME-FILE
++ -73 FFB7 REPOSITION-FILE
++ -74 FFB6 RESIZE-FILE
++ -75 FFB5 WRITE-FILE
++ -76 FFB4 WRITE-LINE
+s q
 mkdir home
 mkdir bin
-
 .( DONE ) cr
 [then]
 
 forth-wordlist +order definitions
-: dos ( only ) {dos} +order {ffs} +order mount {ffs} -order ;
+: +ffs {ffs} +order ;
+: +dos {dos} +order ;
+: dos ( only ) +dos +ffs mount {ffs} -order ;
 
 defined eforth 0= [if]
 \ If we are running in eForth we want to add the definitions
@@ -1759,10 +1833,7 @@ dup constant stdout
 dup constant stderr
 drop
 
-\ TODO: Call `dos`
 \ TODO: Prevent mount from reloading block if already loaded?
-\ TODO: Calling `login` twice causes problems (`ok` prompt
-\ disappears).
 defined eforth [if]
 edit login.fth
 + ( A primitive user login system [that is super insecure]. )
@@ -1771,13 +1842,13 @@ edit login.fth
 + wordlist +order definitions
 + wordlist constant users
 + 
-+ <ok> @ constant (prompt) ( -- xt : store ok for later use )
++ ' ok constant (prompt) ( -- xt : store ok for later use )
 + 
 + variable proceed 0 proceed !
 + : conceal $1B emit ." [8m" ; ( Could also override <emit> )
 + : reveal $1B emit ." [28m" ;
 + : secure users 1 set-order ; ( load password database )
-+ : restore only forth definitions decimal (prompt) <ok> ! ;
++ : restore only forth definitions +dos (prompt) <ok> ! ;
 + : message ." user: " ; ( -- : prompt asking for user-name )
 + : fail ." Invalid username or password" cr ; ( -- error msg )
 + : success 1 proceed ! ." logged in." ; ( signal success )
@@ -1790,18 +1861,11 @@ edit login.fth
 +   drop empty proceed @ until ;
 + 
 + forth-wordlist +order definitions
-+ 
-+ \ The user login system presents only a few words to manage
-+ \ and use it. "user:", "login" and ".users". They have 
-+ \ already been described.
-+ \ 
-+ \ Missing are words to remove an entry (difficult to add), to
-+ \ change a password (easy to add) and the word list used to
-+ \ back the database (which could be added easily enough).
++
 + : user: ( "user" "password" -- : create new user entry )
 + users +order definitions create pass , only forth definitions
 +   does> ask @ pass = if restore success exit then fail ;
-+ : login 0 proceed ! retry ; ( -- : enter login system )
++ : login 0 proceed ! retry dos ; ( -- : enter login system )
 + : .users get-order secure words set-order ; ( -- )
 + 
 + user: guest guest
@@ -1809,16 +1873,16 @@ edit login.fth
 + user: archer dangerzone
 + user: cyril figgis
 + user: lana stirling
-+ .( EFORTH ONLINE ) cr
++ .( EFORTH DOS ONLINE ) cr
 + login
 s
 q
 [then]
-
 
 defined eforth [if]
 : reboot dos quit ;
 ' reboot <quit> !
 [then]
 
-\ only forth definitions marker [START]
+\ marker [START]
+

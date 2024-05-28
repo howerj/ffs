@@ -18,6 +18,7 @@ reset () {
 # TODO: Select gforth or subleq
 run () {
 	make run
+	#make forth
 }
 
 reset
