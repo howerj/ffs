@@ -574,6 +574,7 @@ cell 2 = little-endian and [if]
 : f@t ;
 : linkable 
   dup 1 end 1+ within 
+  \ TODO: if block.end then we are linkable in a way
   over >fat blk.lastv u< swap and ; ( blk -- blk f )
 \ : linkable dup dirstart 1+ end 1+ within ; ( blk -- blk f )
 : link ( blk -- blk : load next block from FAT )
@@ -640,7 +641,11 @@ cell 2 = little-endian and [if]
 : bfree ( blk -- : free a linked list ) 
   dup dirstart <= if drop exit then
   dup end >= if drop exit then
-  linkable 0= if drop exit then
+  \ Calling linkable here does not work, as blk.end is
+  \ treated as not being linkable. This should probably be
+  \ changed, but the current situation works.
+  \ 
+  \   linkable 0= if drop exit then )
   begin
   dup link swap blk.free swap bvalid? reserve
   dup blk.end = until drop save ; 
@@ -717,10 +722,6 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
   dup  5  lshift limit xor   ( crc x )
   dup  12 lshift limit xor   ( crc x )
   swap 8  lshift limit xor ; ( crc )
-\ : crc ( c-addr u -- ccitt : 16 bit CCITT CRC )
-\  $FFFF -rot
-\  begin ?dup while >r tuck c@ 
-\  ccitt swap r> +string repeat drop ;
 
 : crc ( b u -- u : calculate ccitt-ffff CRC )
   $FFFF >r begin ?dup while
@@ -1586,16 +1587,16 @@ r/o w/o or constant r/w ( -- fam )
 {edlin} -order
 
 \ Aliases
-: bye halt ;
 : chdir cd ;
 : cls page ;
 : cp copy ;
 : del rm ;
 : ed edit ;
-: exit halt ;
 : sh exe ;
 : touch mkfile ;
 : diff cmp ;
+( : bye halt ; ) \ Clashes with FORTHs `bye`word.
+( : exit halt ; ) \ Clashes with FORTHs `exit` word.
 ( : quit halt ; ) \ Clashes with FORTHs `quit` word.
 ( : move mv ; ) \ Clashes with FORTHs `move` word.
 ( : type cat ; ) \ Clashes with FORTHs `type` word.
@@ -1652,10 +1653,13 @@ edit help.txt
 + halt / quit / bye: safely halt system
 + help: display a short help
 + hexdump <FILE>: hexdump a file
++ login: password login (NOP if no users) (SUBLEQ eForth only)
 + ls / dir : list directory
++ lsuser: List all users in login system (SUBLEQ eFORTH only)
 + melt: Unfreeze file system - Turn off read only mode
 + mkdir <DIR>: make a directory
 + mknod <FILE> <NUM>: make a special <FILE> with <NUM>
++ mkuser <USER> <PASSWORD>: create new user entry (SUBLEQ only)
 + more <FILE>: display a file, pause for each block
 + mount: attempt file system mounting
 + pwd: print current working directory
@@ -1728,82 +1732,82 @@ edit demo.fth
 + 2 2 + . cr
 q
 edit errors.db
-+  -1 FFFF ABORT
-+  -2 FFFE ABORT"
-+  -3 FFFD stack overflow
-+  -4 FFFC stack underflow
-+  -5 FFFB return stack overflow
-+  -6 FFFA return stack underflow
-+  -7 FFF9 do-loops nested too deeply
-+  -8 FFF8 dictionary overflow
-+  -9 FFF7 invalid memory address
-+ -10 FFF6 division by zero
-+ -11 FFF5 result out of range
-+ -12 FFF4 argument type mismatch
-+ -13 FFF3 undefined word
-+ -14 FFF2 interpreting a compile-only word
-+ -15 FFF1 invalid FORGET
-+ -16 FFF0 attempt to use 0-len str. as a name
-+ -17 FFEF pictured numeric out. str. overflow
-+ -18 FFEE parsed string overflow
-+ -19 FFED definition name too long
-+ -20 FFEC write to a read-only location
-+ -21 FFEB unsupported operation
-+ -22 FFEA control structure mismatch
-+ -23 FFE9 address alignment exception
-+ -24 FFE8 invalid numeric argument
-+ -25 FFE7 return stack imbalance
-+ -26 FFE6 loop parameters unavailable
-+ -27 FFE5 invalid recursion
-+ -28 FFE4 user interrupt
-+ -29 FFE3 compiler nesting
-+ -30 FFE2 obsolescent feature
-+ -31 FFE1 >BODY used on non-CREATEd def.
-+ -32 FFE0 invalid name arg. (e.g., TO xxx)
-+ -33 FFDF block read exception
-+ -34 FFDE block write exception
-+ -35 FFDD invalid block number
-+ -36 FFDC invalid file position
-+ -37 FFDB file I/O exception
-+ -38 FFDA non-existent file
-+ -39 FFD9 unexpected end of file
-+ -40 FFD8 wrong BASE in float point convert
-+ -41 FFD7 loss of precision
-+ -42 FFD6 floating-point divide by zero
-+ -43 FFD5 floating-point result out of range
-+ -44 FFD4 floating-point stack overflow
-+ -45 FFD3 floating-point stack underflow
-+ -46 FFD2 floating-point invalid argument
-+ -47 FFD1 compilation word list deleted
-+ -48 FFD0 invalid POSTPONE
-+ -49 FFCF search-order overflow
-+ -50 FFCE search-order underflow
-+ -51 FFCD compilation word list changed
-+ -52 FFCC control-flow stack overflow
-+ -53 FFCB exception stack overflow
-+ -54 FFCA floating-point underflow
-+ -55 FFC9 floating-point unidentified fault
-+ -56 FFC8 QUIT
-+ -57 FFC7 exception in tx or rx a character
-+ -58 FFC6 [ IF ], [ ELSE ], or [ THEN ] exception
-+ -59 FFC5 ALLOCATE
-+ -60 FFC4 FREE
-+ -61 FFC3 RESIZE
-+ -62 FFC2 CLOSE-FILE
-+ -63 FFC1 CREATE-FILE
-+ -64 FFC0 DELETE-FILE
-+ -65 FFBF FILE-POSITION
-+ -66 FFBE FILE-SIZE
-+ -67 FFBD FILE-STATUS
-+ -68 FFBC FLUSH-FILE
-+ -69 FFBB OPEN-FILE
-+ -70 FFBA READ-FILE
-+ -71 FFB9 READ-LINE
-+ -72 FFB8 RENAME-FILE
-+ -73 FFB7 REPOSITION-FILE
-+ -74 FFB6 RESIZE-FILE
-+ -75 FFB5 WRITE-FILE
-+ -76 FFB4 WRITE-LINE
++ -1  ABORT
++ -2  ABORT"
++ -3  stack overflow
++ -4  stack underflow
++ -5  return stack overflow
++ -6  return stack underflow
++ -7  do-loops nested too deeply
++ -8  dictionary overflow
++ -9  invalid memory address
++ -10 division by zero
++ -11 result out of range
++ -12 argument type mismatch
++ -13 undefined word
++ -14 interpreting a compile-only word
++ -15 invalid FORGET
++ -16 attempt to use 0-len str. as a name
++ -17 pictured numeric out. str. overflow
++ -18 parsed string overflow
++ -19 definition name too long
++ -20 write to a read-only location
++ -21 unsupported operation
++ -22 control structure mismatch
++ -23 address alignment exception
++ -24 invalid numeric argument
++ -25 return stack imbalance
++ -26 loop parameters unavailable
++ -27 invalid recursion
++ -28 user interrupt
++ -29 compiler nesting
++ -30 obsolescent feature
++ -31 >BODY used on non-CREATEd def.
++ -32 invalid name arg. (e.g., TO xxx)
++ -33 block read exception
++ -34 block write exception
++ -35 invalid block number
++ -36 invalid file position
++ -37 file I/O exception
++ -38 non-existent file
++ -39 unexpected end of file
++ -40 wrong BASE in float point convert
++ -41 loss of precision
++ -42 floating-point divide by zero
++ -43 floating-point result out of range
++ -44 floating-point stack overflow
++ -45 floating-point stack underflow
++ -46 floating-point invalid argument
++ -47 compilation word list deleted
++ -48 invalid POSTPONE
++ -49 search-order overflow
++ -50 search-order underflow
++ -51 compilation word list changed
++ -52 control-flow stack overflow
++ -53 exception stack overflow
++ -54 floating-point underflow
++ -55 floating-point unidentified fault
++ -56 QUIT
++ -57 exception in tx or rx a character
++ -58 [ IF ], [ ELSE ], or [ THEN ] exception
++ -59 ALLOCATE
++ -60 FREE
++ -61 RESIZE
++ -62 CLOSE-FILE
++ -63 CREATE-FILE
++ -64 DELETE-FILE
++ -65 FILE-POSITION
++ -66 FILE-SIZE
++ -67 FILE-STATUS
++ -68 FLUSH-FILE
++ -69 OPEN-FILE
++ -70 READ-FILE
++ -71 READ-LINE
++ -72 RENAME-FILE
++ -73 REPOSITION-FILE
++ -74 RESIZE-FILE
++ -75 WRITE-FILE
++ -76 WRITE-LINE
 s q
 mkdir home
 mkdir bin
@@ -1813,6 +1817,7 @@ mkdir bin
 forth-wordlist +order definitions
 : +ffs {ffs} +order ;
 : +dos {dos} +order ;
+: +system system +order ;
 : dos ( only ) +dos +ffs mount {ffs} -order ;
 
 defined eforth 0= [if]
@@ -1833,10 +1838,10 @@ dup constant stdout
 dup constant stderr
 drop
 
-\ TODO: Prevent mount from reloading block if already loaded?
 defined eforth [if]
 edit login.fth
-+ ( A primitive user login system [that is super insecure]. )
++ \ A primitive user login system [that is super insecure].
++ \ If no users are present then we login automatically.
 + system +order
 + {ffs} +order
 + wordlist +order definitions
@@ -1856,31 +1861,50 @@ edit login.fth
 + : ask ." pass: " conceal query reveal ;
 + : empty depth for aft drop then next ; ( ??? -- )
 + : prompt secure message [ ' ) ] literal <ok> ! ;
-+ : get query eval ; ( "xxx" -- : get user name )
-+ : retry begin prompt [ ' get ] literal catch 
++ : uget query eval ; ( "xxx" -- : get user name )
++ : nousers users @ 0= ; ( -- : no users defined? )
++ : retry nousers ?exit begin prompt [ ' uget ] literal catch 
 +   drop empty proceed @ until ;
 + 
-+ forth-wordlist +order definitions
++ +dos definitions
 +
-+ : user: ( "user" "password" -- : create new user entry )
++ : mkuser ( "user" "password" -- : create new user entry )
 + users +order definitions create pass , only forth definitions
 +   does> ask @ pass = if restore success exit then fail ;
 + : login 0 proceed ! retry dos ; ( -- : enter login system )
-+ : .users get-order secure words set-order ; ( -- )
++ : lsuser get-order secure words set-order ; ( -- )
 + 
-+ user: guest guest
-+ user: admin password1
-+ user: archer dangerzone
-+ user: cyril figgis
-+ user: lana stirling
-+ .( EFORTH DOS ONLINE ) cr
-+ login
++ \ mkuser guest guest
++ \ mkuser admin password1
++ \ mkuser archer dangerzone
++ \ mkuser cyril figgis
++ \ mkuser lana stirling
++ only forth definitions +dos +ffs +system
 s
 q
+exe login.fth
+rm login.fth
 [then]
 
+create linebuf c/blk allot
+
+: toerror ( code file -- c u f )
+  >r
+  begin
+    linebuf c/blk r@ read-file 0<> swap 0= or if
+      rdrop drop 0 0 0 exit
+    then
+    dup linebuf 4 -trailing numberify 2drop
+  = until drop rdrop linebuf c/blk 4 /string -trailing -1 ;
+
+: >error
+  s" errors.db" r/o open-file throw
+  dup >r toerror r> close-file throw 
+  ?exit 2drop s" unknown" ;
+
 defined eforth [if]
-: reboot dos quit ;
+\ : reboot dos quit ;
+: reboot dos login quit ;
 ' reboot <quit> !
 [then]
 
