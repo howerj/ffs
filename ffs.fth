@@ -202,6 +202,7 @@
 \ file system limitations and partly due to a lack of need.
 \
 \ TODO: Better path parsing?
+\ TODO: More line-oriented utilities
 \
 
 defined (order) 0= [if]
@@ -662,6 +663,9 @@ cell 2 = little-endian and [if]
   repeat drop save ;
 : fmt.init ( -- )
   init addr? b/buf blank
+  \ A program that would be useful is one that would load
+  \ the file system word-set form a series of contiguous blocks
+  \ if the word-set was not present.
   s" .( HOWERJ SIMPLE FORTH FILE SYSTEM / DOS ) cr 1 loaded !" 
   init addr? swap cmove save ;
 : fmt.fat
@@ -1180,7 +1184,7 @@ r/o w/o or constant r/w ( -- fam )
 : error?-file ( fileid -- f )
   findex f.flags @ flg.error and 0<> ;
 : create-file ( c-addr u fam -- fileid ior )
-  fam? >r 2dup ncopy full? 1 [ ' (mkfile) ] literal catch
+  fam? >r 2dup ncopy full? 0 [ ' (mkfile) ] literal catch
   ?dup if nip nip nip -1 swap rdrop exit then save
   r> open-file ; 
 : flush-file ( fileid -- ior )
@@ -1902,4 +1906,21 @@ defined eforth [if]
 [then]
 
 \ marker [START]
+
+\ Usage:
+\
+\   file: example.txt
+\   | .( Line #1 ) cr
+\   | .( Line #2 ) cr
+\   ;file
+\
+variable handle -1 handle !
+: recreate-file >r 2dup delete-file drop r> create-file ;
+: -handle -1 handle ! ;
+: file: -handle token count w/o recreate-file throw handle ! ;
+: remaining source nip >in @ - ; ( -- n )
+: leftovers source nip remaining - >r source r> /string ;
+: discard source nip >in ! ; ( -- )
+: | leftovers handle @ write-line throw discard ;
+: ;file handle @ close-file -handle throw ;
 
