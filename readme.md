@@ -20,7 +20,7 @@ Some quick notes and limitations:
 * Files consist of *non-contiguous* Forth Blocks.
 * Files still consist of Forth Blocks, so are multiples of
 1024 bytes in size.
-* The maximum file system size is 512KiB.
+* The maximum file system size is roughly 64MiB.
 * The maximum number of files per directory is 30.
 * The file system is reliant on the Forth Block word-set and 
 should run on even the most spartan Forth system so long as it 
