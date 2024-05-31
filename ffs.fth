@@ -248,6 +248,8 @@
 \ it is a head-block.
 \ TODO: Hex-editor
 \ TODO: Dump file system command
+\ TODO: Block2File and File2Block
+\ TODO: Replace um/mod where possible with `and` and shifting
 \
 
 defined (order) 0= [if]
@@ -617,7 +619,8 @@ cell 2 = little-endian and [if]
   decompose 2* swap fat + addr? + 16! modify ;
 : linkable 
   dup 1 end 1+ within 
-  \ TODO: if block.end then we are linkable in a way
+  \ N.B. If `block.end` then we are linkable in a way, we
+  \ could handle that.
   over f@t blk.lastv u< swap and ; ( blk -- blk f )
 \ : linkable dup dirstart 1+ end 1+ within ; ( blk -- blk f )
 : link ( blk -- blk : load next block from FAT )
@@ -731,19 +734,12 @@ cell 2 = little-endian and [if]
   dirstart end dirstart - start - 1- for
     dup fblk 1+
   next drop ;
-: xdump ( blk -- )
-  base @ >r hex addr? cr
-  c/blk 1- for
-    l/blk 1- for
-      count 0 <# bl hold # # #> type
-    next cr
-  next r> base ! drop ;
 : apply ( file xt -- : apply execution token to file )
   >r begin dup r@ swap >r execute r> link dup blk.end = until 
   rdrop drop ;
 : +list block? list ; ( blk -- )
 : +load block? load ; ( blk -- )
-: bgrep ( N.B - mcopy must hold search term )
+: (grep) ( N.B - mcopy must hold search term )
   addr?
   l/blk 1- for
     dup c/blk movebuf drop grepl @ examine nip nip if
@@ -780,9 +776,8 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
 : link-list [ ' +list ] literal apply ; ( file -- )
 : link-blank [ ' bblk ] literal apply ; ( file -- )
 : link-erase [ ' fblk ] literal apply ; ( file -- )
-: link-xdump [ ' xdump ] literal apply ; ( file -- )
 : link-u [ ' u. ] literal apply ; ( file -- )
-: link-grep [ ' bgrep ] literal apply ; ( file -- )
+: link-grep [ ' (grep) ] literal apply ; ( file -- )
 : more? key [ 32 invert ] literal and [char] Q = ;
 : more> cr ." --- (q)uit? --- " ;
 : moar +list more> more? ;
@@ -1126,11 +1121,11 @@ variable line 0 line !
 \        
 wordlist constant {required}
 
-: entry ( cs -- f )
+\ : .require get-order {required} 1 set-order words set-order ;
+: entry ( cs -- f : create a new word if one does not exist )
   dup >r find nip ?dup if rdrop exit then
   <# r> count holds s" create  " holds 0 0 #> evaluate 0 ;
-: .require get-order {required} 1 set-order words set-order ;
-: required?
+: required? ( cs -- f : add to required list in {required} )
   >r get-order {required} +order definitions r> entry >r
   set-order definitions r> ;
 
@@ -1143,7 +1138,7 @@ wordlist constant {required}
    1+
   repeat
   drop -1 0 ;
-: ferase findex fhandle-size erase ;
+: ferase findex fhandle-size erase ; ( fhandle -- )
 : take ( -- ptr f : take a free handle if one exists )
   unused? 0= if 0 exit then
   dup ferase
@@ -1153,16 +1148,11 @@ wordlist constant {required}
   nlen?
   dup reqbuf c!
   reqbuf 1+ swap cmove ;
-
 : (stdio) flg.stdout flg.stdin or ;
 : stdio flg.wen flg.ren or (stdio) or ;
 : fam? dup stdio invert and 0<> throw ; ( fam -- fam )
-
 : ferror findex f.flags @ flg.error and 0<> ; ( handle -- f )
-\ : fopened? findex f.flags @ flg.used and 0<> ; 
-\ : feof? findex f.flags @ flg.eof and 0<> ; ( handle -- f )
 : fail f.flags flg.error swap set ; ( findex -- )
-
 : nlast? f.blk @ link blk.end = ;
 : limit? dup nlast? if f.end @ exit then drop b/buf ;
 : fremaining dup >r f.pos @ r> limit? swap - 0 max ;
@@ -1213,10 +1203,10 @@ r/o w/o or constant r/w ( -- fam : read/write )
   peekd over dirent-rem@ r@ f.end !
   peekd over dirent-blk@ dup r@ f.blk ! r@ f.head !
   drop rdrop r> 0 ; 
-: exists-file ( c-addr u -- f )
+: file-exists? ( c-addr u -- f )
   ncopy namebuf peekd dir-find dsl >= ;
-: eof?-file findex f.flags @ flg.eof and 0<> ; ( fileid -- f )
-: error?-file ( fileid -- f )
+: file-eof? findex f.flags @ flg.eof and 0<> ; ( fileid -- f )
+: file-error? ( fileid -- f )
   findex f.flags @ flg.error and 0<> ;
 : create-file ( c-addr u fam -- fileid ior )
   fam? >r 2dup ncopy full? 0 [ ' (mkfile) ] literal catch
@@ -1431,6 +1421,16 @@ r/o w/o or constant r/w ( -- fam : read/write )
   r@ fundex flush-file
   rdrop ;
 
+: recreate-file >r 2dup delete-file drop r> create-file ;
+: rewind-file >r 0 0 r> reposition-file ; ( file -- ior )
+: end-file ( file -- ior : move to the end of a file )
+  dup >r file-length ?dup if 2drop rdrop exit then
+  r> reposition-file ;
+: append-file ( c-addr u fam -- file ior :  )
+  open-file ?dup ?exit >r
+  r@ end-file ?dup if r> close-file drop exit then
+  r> 0 ;
+
 {ffs} +order definitions
 
 : (cksum) ( file-id -- cksum )
@@ -1575,7 +1575,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
   #rem found? dirent-rem!
   r> found? dirent-blk! 
   [char] S found? dirent-type! ;
-: grep ( search file -- : search a file for a string )
+: bgrep ( search file -- : search a file for a string )
   token count dup grepl ! mcopy
   narg namebuf peekd dir-find dup 0< EFILE error
   peekd swap dirent-blk@ link-grep ; 
@@ -1624,10 +1624,29 @@ r/o w/o or constant r/w ( -- fam : read/write )
   cr ." to view files."
   cr cr ." Otherwise visit <https://github.com/howerj/ffs>"
   cr cr ." Command List: " cr words cr cr ;
-: cat (file) link-list ; ( "file" -- )
+: cat ( "file" -- )
+  token count r/o open-file throw
+  >r
+  begin r@ key-file dup 0>= while emit repeat drop
+  r> close-file throw ;
+: bcat (file) link-list ; ( "file" -- )
 : more (file) link-more ; ( "file" -- )
 : exe (file) link-load  ; ( "file" -- )
-: hexdump (file) link-xdump ; ( "file" -- )
+: hexdump ( "file" -- : nicely formatted hexdump of file )
+  token count r/o open-file throw 
+  base @ >r hex
+  >r
+  cr 0 begin
+    r@ key-file dup 0>=
+  while
+    swap dup $10 mod 0= if
+      cr dup 4 u.r ." : "
+    then swap
+    \ N.B. Under SUBLEQ eForth `.` is much faster.
+    0 <# bl hold # #s #> type
+    1+
+  repeat 2drop
+  r> close-file r> base ! throw ;
 : stat ( "file" -- )
   peekd (entry) 
   cr 2dup .type 
@@ -1692,6 +1711,8 @@ edit help.txt
 +
 + Commands:
 +
++ bcat <FILE>: display a series of blocks
++ bgrep <STRING> <FILE>: Search for <STRING> in <FILE> blocks
 + cat <FILE>: display a file
 + cd / chdir <DIR>: change working directory to <DIR>
 + cksum <FILE>: Compute and print CRC (16-bit CCITT) of file
@@ -1708,9 +1729,8 @@ edit help.txt
 + freeze: Freeze file system - Turn on read only mode
 + fsync: save any block changes
 + ftruncate <FILE> <NUM>: truncate <FILE> to <NUM> blocks
-+ grep <STRING> <FILE>: Search for <STRING> in <FILE>
 + help: display a short help
-+ hexdump <FILE>: hexdump a file
++ hexdump <FILE>: hexdump a file consisting of blocks
 + login: password login (NOP if no users) (SUBLEQ eForth only)
 + ls / dir : list directory
 + lsuser: List all users in login system (SUBLEQ eFORTH only)
@@ -1889,6 +1909,10 @@ defined eforth 0= [if]
 {ffs} +order definitions
 [then]
 
+\ `stdin`, `stdout`, and `stderr` could be words that loaded
+\ a file-id from a variable, this would allow these streams to
+\ be redirected.
+\
 s" ." r/w open-file throw ( open special file '.' )
 dup constant stdin
 dup constant stdout
@@ -1963,19 +1987,29 @@ defined eforth [if]
 
 \ Usage:
 \
-\   file: example.txt
-\   | March on, join bravely, let us to it pell mell, if not
-\   | to heaven then hand in hand to hell!
-\   ;file
+\      file: example.txt
+\      | March on, join bravely, let us to it pell mell, if not
+\      | to heaven then hand in hand to hell!
+\      ;file
+\
+\ And to append to a file:
+\
+\      append: example.txt
+\      |
+\      | More Shakespeare!
+\      |
+\      ;append
 \
 variable handle -1 handle !
-: recreate-file >r 2dup delete-file drop r> create-file ;
+
 : -handle -1 handle ! ;
 : file: -handle token count w/o recreate-file throw handle ! ;
+: append: -handle token count w/o append-file throw handle ! ;
 : remaining source nip >in @ - ; ( -- n )
 : leftovers source nip remaining - >r source r> /string ;
 : discard source nip >in ! ; ( -- )
 : | leftovers handle @ write-line throw discard ;
 : ;file handle @ close-file -handle throw ;
+: ;append ;file ;
 
 
