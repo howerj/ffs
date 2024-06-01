@@ -248,7 +248,6 @@
 \ it is a head-block.
 \ TODO: Hex-editor
 \ TODO: Dump file system command
-\ TODO: Block2File and File2Block
 \ TODO: Replace um/mod where possible with `and` and shifting
 \
 
@@ -1315,11 +1314,11 @@ r/o w/o or constant r/w ( -- fam : read/write )
     \ 
     \ The code really should be:
     \ 
-    \   over c@ $A = or if  
+    \   over c@ $A = if  
     \     nip rdrop r> swap - -1 0 exit then
     \   over c@ $D <> if +string then
     \ 
-    over c@ dup $D = swap $A = or if 
+    over c@ ( dup $D = swap ) $A = ( or ) if 
       nip rdrop r> swap - -1 0 exit then
     +string
   repeat
@@ -1629,8 +1628,21 @@ r/o w/o or constant r/w ( -- fam : read/write )
   >r
   begin r@ key-file dup 0>= while emit repeat drop
   r> close-file throw ;
+: more ( "file" -- )
+  token count r/o open-file throw
+  >r 0
+  begin r@ key-file dup 0>= 
+  while 
+    dup $A = if swap 1+ swap then emit 
+    dup $F > if more> more? if
+      ." QUIT" cr
+      r> close-file throw drop exit then 
+      drop 0
+    then 
+  repeat 2drop
+  r> close-file throw ." EOF" cr ;
 : bcat (file) link-list ; ( "file" -- )
-: more (file) link-more ; ( "file" -- )
+: bmore (file) link-more ; ( "file" -- )
 : exe (file) link-load  ; ( "file" -- )
 : hexdump ( "file" -- : nicely formatted hexdump of file )
   token count r/o open-file throw 
@@ -1688,7 +1700,7 @@ defined eforth 0= ?\ mknod [FAT] 1
 defined eforth    ?\ mknod [BOOT] 65
 defined eforth    ?\ mknod [FAT] 66
 defined eforth    ?\ mknod [KERNEL] 1
-edit help.txt
+edit help.blk
 + FORTH FILE SYSTEM HELP AND COMMANDS
 +
 + Author: Richard James Howe
@@ -1713,6 +1725,7 @@ edit help.txt
 +
 + bcat <FILE>: display a series of blocks
 + bgrep <STRING> <FILE>: Search for <STRING> in <FILE> blocks
++ bmore <FILE>: display a file, pause for each block
 + cat <FILE>: display a file
 + cd / chdir <DIR>: change working directory to <DIR>
 + cksum <FILE>: Compute and print CRC (16-bit CCITT) of file
@@ -1738,7 +1751,7 @@ edit help.txt
 + mkdir <DIR>: make a directory
 + mknod <FILE> <NUM>: make a special <FILE> with <NUM>
 + mkuser <USER> <PASSWORD>: create new user entry (SUBLEQ only)
-+ more <FILE>: display a file, pause for each block
++ more <FILE>: display a file, pause for every X lines
 + mount: attempt file system mounting
 + pwd: print current working directory
 + rename <DIR/FILE1> <DIR/FILE2>: rename a file or directory
@@ -1808,7 +1821,7 @@ edit demo.fth
 + .( HELLO, WORLD ) cr
 + 2 2 + . cr
 q
-edit errors.db
+edit errors.blk
 + -1  ABORT
 + -2  ABORT"
 + -3  stack overflow
@@ -1964,6 +1977,7 @@ only forth definitions +dos +ffs +system
 
 create linebuf c/blk allot
 
+\ TODO: Read-line, to save on space
 : toerror ( code file -- c u f )
   >r
   begin
@@ -1974,7 +1988,7 @@ create linebuf c/blk allot
   = until drop rdrop linebuf c/blk 4 /string -trailing -1 ;
 
 : >error
-  s" errors.db" r/o open-file throw
+  s" errors.blk" r/o open-file throw
   dup >r toerror r> close-file throw 
   ?exit 2drop s" unknown" ;
 
@@ -2012,4 +2026,50 @@ variable handle -1 handle !
 : ;file handle @ close-file -handle throw ;
 : ;append ;file ;
 
+\ TODO: If fam is r/o then we just open-file...
+: open-or-create-file ( c-addr u ior -- handle ior )
+  >r 2dup file-exists? if r> open-file exit then 
+  r> create-file ;
 
+: with-files ( "file" "file" xt -- )
+  >r
+  token count r/w open-file throw 
+  token count r/w open-or-create-file ?dup 
+    if swap close-file drop exit then
+  r> execute close-file swap close-file throw throw throw ;
+
+: (b2f) ( handle handle -- error handle handle )
+  begin
+    linebuf c/blk 3 pick read-file 0<> swap 0= or if
+      0 -rot exit
+    then
+    linebuf c/blk -trailing 2 pick write-line ?dup
+  until -rot ;
+
+: replace ( c1 c2 c-addr u -- : replace c2 with c1 )
+  begin
+    ?dup
+  while
+    over c@ 3 pick = if over 4 pick swap c! then
+    +string
+  repeat drop 2drop ;
+
+: (f2b) ( handle handle -- error handle handle )
+  begin
+    linebuf c/blk blank
+    linebuf c/blk 3 pick read-line drop nip 0= if
+      0 -rot exit
+    then
+    bl $A linebuf c/blk replace
+    bl $D linebuf c/blk replace
+    linebuf c/blk 2 pick write-file ?dup 
+  until -rot ;
+
+: b2f ( "file" "file" -- convert block file to byte file  )
+  [ ' (b2f) ] literal with-files ;
+
+: f2b ( "file" "file" -- convert byte file to block file )
+  [ ' (f2b) ] literal with-files ;
+
+: force-unlock
+;
