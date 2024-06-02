@@ -391,6 +391,14 @@ defined search 0= [if]
     +string
   repeat 2drop r> 0 ;
 
+: replace ( c1 c2 c-addr u -- : string replace c2 with c1 )
+  begin
+    ?dup
+  while
+    over c@ 3 pick = if over 4 pick swap c! then
+    +string
+  repeat drop 2drop ;
+
 defined b/buf 0= [if] 1024 constant b/buf [then]
 defined d>s 0= [if] : d>s drop ; [then]
 
@@ -503,6 +511,9 @@ variable eline 0 eline !       \ Empty link in directory
 variable grepl 0 grepl !       \ used to store grep length
 variable insensitive 0 insensitive ! \ Case insensitivity
 variable fatal 0 fatal ! \ Has a fatal error occurred?
+variable handle -1 handle ! \ Used with `file:`
+create linebuf c/blk allot  \ Used as temporary line buffer
+
 
 8 constant fopen-max
 7 cells constant fhandle-size
@@ -1430,6 +1441,32 @@ r/o w/o or constant r/w ( -- fam : read/write )
   r@ end-file ?dup if r> close-file drop exit then
   r> 0 ;
 
+\ Usage:
+\
+\      file: example.txt
+\      | March on, join bravely, let us to it pell mell, if not
+\      | to heaven then hand in hand to hell!
+\      ;file
+\
+\ And to append to a file:
+\
+\      append: example.txt
+\      |
+\      | More Shakespeare!
+\      |
+\      ;append
+\
+
+: -handle -1 handle ! ;
+: file: -handle token count w/o recreate-file throw handle ! ;
+: append: -handle token count w/o append-file throw handle ! ;
+: remaining source nip >in @ - ; ( -- n )
+: leftovers source nip remaining - >r source r> /string ;
+: discard source nip >in ! ; ( -- )
+: | leftovers handle @ write-line throw discard ;
+: ;file handle @ close-file -handle throw ;
+: ;append ;file ;
+
 {ffs} +order definitions
 
 : (cksum) ( file-id -- cksum )
@@ -1451,6 +1488,37 @@ r/o w/o or constant r/w ( -- fam : read/write )
   until
   rdrop ;
 
+: (b2f) ( handle handle -- error handle handle )
+  begin
+    linebuf c/blk 3 pick read-file 0<> swap 0= or if
+      0 -rot exit
+    then
+    linebuf c/blk -trailing 2 pick write-line ?dup
+  until -rot ;
+
+: (f2b) ( handle handle -- error handle handle )
+  begin
+    linebuf c/blk blank
+    linebuf c/blk 3 pick read-line drop nip 0= if
+      0 -rot exit
+    then
+    bl $A linebuf c/blk replace
+    bl $D linebuf c/blk replace
+    linebuf c/blk 2 pick write-file ?dup 
+  until -rot ;
+
+: open-or-create-file ( c-addr u fam -- handle ior )
+  >r 2dup file-exists? r@ w/o and 0= or if 
+    r> open-file exit then 
+  r> create-file ;
+
+: with-files ( "file" "file" xt -- )
+  >r
+  token count r/w open-file throw 
+  token count r/w open-or-create-file ?dup 
+    if swap close-file drop exit then
+  r> execute close-file swap close-file throw throw throw ;
+
 {dos} +order definitions
 
 : df cr ( -- : list disk usage and file system info )
@@ -1461,8 +1529,8 @@ r/o w/o or constant r/w ( -- fam : read/write )
    ." START BLK:   " start u. cr
    ." END BLK:     " end u. cr
    ." MAX DIRS:    " maxdir u. cr
-   ." MAX:         " end start - dup . ." / " b/buf * u. cr
-   ." FREE:        " blk.free btally dup . ." / " b/buf * u. cr 
+   ." MAX:         " end start - dup . ."  /" b/buf * u. cr
+   ." FREE:        " blk.free btally dup . ."  /" b/buf * u. cr 
    ." BAD BLKS:    " blk.bad-blk btally u. cr 
    ." LARGEST CONTIGUOUS BLOCK: " largest u. cr 
    ." READ ONLY:    " read-only @ yes? type cr
@@ -1651,7 +1719,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
   cr 0 begin
     r@ key-file dup 0>=
   while
-    swap dup $10 mod 0= if
+    swap dup $F and 0= if
       cr dup 4 u.r ." : "
     then swap
     \ N.B. Under SUBLEQ eForth `.` is much faster.
@@ -1659,19 +1727,24 @@ r/o w/o or constant r/w ( -- fam : read/write )
     1+
   repeat 2drop
   r> close-file r> base ! throw ;
-: stat ( "file" -- )
+: stat ( "file" -- : detailed file stats )
   peekd (entry) 
   cr 2dup .type 
-  cr dirent-blk@ dup bcount ." BCNT: " u. 
+  cr 2dup dirent-rem@ ." REMB: " u.
+  cr      dirent-blk@ dup bcount ." BCNT: " u. 
+  cr  dup ." HEAD: " u.
   cr ." BLKS: " link-u ;
+: b2f ( "file" "file" -- convert block file to byte file  )
+  [ ' (b2f) ] literal with-files ;
+: f2b ( "file" "file" -- convert byte file to block file )
+  [ ' (f2b) ] literal with-files ;
+{edlin} +order
+: edit ro? narg (create) dup (round) edlin ; ( "file" -- )
+{edlin} -order
 
 \ : defrag ; \ compact disk
 \ : chkdsk ;
 \ : wc ;
-
-{edlin} +order
-: edit ro? narg (create) dup (round) edlin ; ( "file" -- )
-{edlin} -order
 
 \ Aliases
 : chdir cd ;
@@ -1688,9 +1761,6 @@ r/o w/o or constant r/w ( -- fam : read/write )
 ( : move mv ; ) \ Clashes with FORTHs `move` word.
 ( : type cat ; ) \ Clashes with FORTHs `type` word.
 
-
-\ TODO: Line oriented file?
-\ TODO: Distinguish between block files and byte files?
 mount loaded @ 0= [if]
 cr .( FFS NOT PRESENT, FORMATTING... ) cr
 fdisk
@@ -1700,207 +1770,208 @@ defined eforth 0= ?\ mknod [FAT] 1
 defined eforth    ?\ mknod [BOOT] 65
 defined eforth    ?\ mknod [FAT] 66
 defined eforth    ?\ mknod [KERNEL] 1
-edit help.blk
-+ FORTH FILE SYSTEM HELP AND COMMANDS
-+
-+ Author: Richard James Howe
-+ Repo:   https://github.com/howerj/ffs
-+ Email:  howe.r.j.89@gmail.com
-+
-+ This is a simple DOS like file system for FORTH, it makes
-+ it easier to edit and manipulate data than using raw blocks.
-+
-+ For more information see:
-+
-+ <https://github.com/howerj/ffs>
-+ <https://github.com/howerj/subleq>
-+
-+ To simplify the implementation only the `move` command can
-+ move files and directories into other directories, `move`
-+ also handles targets "." and "..", like `cd` does.
-+
-+ To execute a file type `sh <FILE>` or `exe <FILE>`.
-+
-+ Commands:
-+
-+ bcat <FILE>: display a series of blocks
-+ bgrep <STRING> <FILE>: Search for <STRING> in <FILE> blocks
-+ bmore <FILE>: display a file, pause for each block
-+ cat <FILE>: display a file
-+ cd / chdir <DIR>: change working directory to <DIR>
-+ cksum <FILE>: Compute and print CRC (16-bit CCITT) of file
-+ cls: clear screen
-+ cmp / diff <FILE> <FILE>: compare two files
-+ cp / copy <FILE1> <FILE2>: copy <FILE1> to new <FILE2>
-+ deltree <FILE/DIR>: delete a file, or directory recurisvely
-+ df: display file system information
-+ ed / edit <FILE>: edit a <FILE> with the block editor
-+ exe / sh <FILE>: execute source <FILE>
-+ fallocate <FILE> <NUM>: make <FILE> with <NUM> blocks
-+ fdisk: **WARNING** formats disk deleting all data!
-+ fgrow <FILE> <NUM>: grow <FILE> by <NUM> blocks
-+ freeze: Freeze file system - Turn on read only mode
-+ fsync: save any block changes
-+ ftruncate <FILE> <NUM>: truncate <FILE> to <NUM> blocks
-+ help: display a short help
-+ hexdump <FILE>: hexdump a file consisting of blocks
-+ login: password login (NOP if no users) (SUBLEQ eForth only)
-+ ls / dir : list directory
-+ lsuser: List all users in login system (SUBLEQ eFORTH only)
-+ melt: Unfreeze file system - Turn off read only mode
-+ mkdir <DIR>: make a directory
-+ mknod <FILE> <NUM>: make a special <FILE> with <NUM>
-+ mkuser <USER> <PASSWORD>: create new user entry (SUBLEQ only)
-+ more <FILE>: display a file, pause for every X lines
-+ mount: attempt file system mounting
-+ pwd: print current working directory
-+ rename <DIR/FILE1> <DIR/FILE2>: rename a file or directory
-+ rm / del <FILE>: remove a <FILE> and not a <DIR>
-+ rmdir <DIR>: remove an empty directory
-+ sh / shell: invoke file system shell
-+ stat <FILE>: display detailed information on <FILE>
-+ touch / mkfile <FILE>: make a new file
-+ tree: recursively print directories from the current one
-+ 
-+ Example commands:
-+
-+ mkdir test
-+ cd test
-+ edit HELLO.FTH
-+ 0 i .( HELLO, WORLD ) cr
-+ s q
-+ exe HELLO.FTH
-+ rm HELLO.FTH
-+ ls
-+ 
-n 
-+ EDITOR COMMANDS
-+ This block editor is primitive but usable. It operates on
-+ 1024 byte Forth blocks, with 16 lines per block. Some 
-+ commands accept a line number or position.
-+ q : quit editor
-+ s : save work
-+ n : move to next block in file, allocating one if needed
-+ p : move to previous block in file
-+ + <LINE>: insert <LINE>, advance line count, 'n' if needed
-+ - : decrement line count, call 'p' if needed, no <LINE>
-+ x : execute current file from the start
-+ #line d : delete #line
-+ l : list current block we are editing
-+ w : list commands available to the editor
-+ #line a / i <LINE>: insert <LINE> onto #line of current block
-+ #line #row ia <LINE>: insert <LINE> into #line at #row
-+ ? : display current block
-+ z : blank current block
-+ y : yank block to storage buffer
-+ u : replace screen with storage buffer
-+
-+ Note that it is possible to delete a file whilst editing it,
-+ which is not advised but should not break anything.
-+
-+ When editing a file with `edit` if the file does not exist
-+ it is created.
-+
-+ A typical session might look like:
-+
-+ edit hello.fth
-+ 0 i \ HELLO WORLD PROGRAM, VERSION #666, RJH, 15/04/2024
-+ 1 i .( AHOY THERE WORLD, SALUTATIONS AND WARM GREETINGS ) cr
-+ s
-+ q
-+ exe hello.fth
-+
-+ This is a block editor, and not a freeform text editor, so
-+ it does follow a strict format of 16 lines of text per block.
-+
-+ "p" and "n" can be used to move forward and backward in the
-+ file, a new block is assigned if "n" is at the end of the
-+ file.
-q
+mkdir home
+mkdir bin
 edit demo.fth
 + .( HELLO, WORLD ) cr
 + 2 2 + . cr
 q
-edit errors.blk
-+ -1  ABORT
-+ -2  ABORT"
-+ -3  stack overflow
-+ -4  stack underflow
-+ -5  return stack overflow
-+ -6  return stack underflow
-+ -7  do-loops nested too deeply
-+ -8  dictionary overflow
-+ -9  invalid memory address
-+ -10 division by zero
-+ -11 result out of range
-+ -12 argument type mismatch
-+ -13 undefined word
-+ -14 interpreting a compile-only word
-+ -15 invalid FORGET
-+ -16 attempt to use 0-len str. as a name
-+ -17 pictured numeric out. str. overflow
-+ -18 parsed string overflow
-+ -19 definition name too long
-+ -20 write to a read-only location
-+ -21 unsupported operation
-+ -22 control structure mismatch
-+ -23 address alignment exception
-+ -24 invalid numeric argument
-+ -25 return stack imbalance
-+ -26 loop parameters unavailable
-+ -27 invalid recursion
-+ -28 user interrupt
-+ -29 compiler nesting
-+ -30 obsolescent feature
-+ -31 >BODY used on non-CREATEd def.
-+ -32 invalid name arg. (e.g., TO xxx)
-+ -33 block read exception
-+ -34 block write exception
-+ -35 invalid block number
-+ -36 invalid file position
-+ -37 file I/O exception
-+ -38 non-existent file
-+ -39 unexpected end of file
-+ -40 wrong BASE in float point convert
-+ -41 loss of precision
-+ -42 floating-point divide by zero
-+ -43 floating-point result out of range
-+ -44 floating-point stack overflow
-+ -45 floating-point stack underflow
-+ -46 floating-point invalid argument
-+ -47 compilation word list deleted
-+ -48 invalid POSTPONE
-+ -49 search-order overflow
-+ -50 search-order underflow
-+ -51 compilation word list changed
-+ -52 control-flow stack overflow
-+ -53 exception stack overflow
-+ -54 floating-point underflow
-+ -55 floating-point unidentified fault
-+ -56 QUIT
-+ -57 exception in tx or rx a character
-+ -58 [ IF ], [ ELSE ], or [ THEN ] exception
-+ -59 ALLOCATE
-+ -60 FREE
-+ -61 RESIZE
-+ -62 CLOSE-FILE
-+ -63 CREATE-FILE
-+ -64 DELETE-FILE
-+ -65 FILE-POSITION
-+ -66 FILE-SIZE
-+ -67 FILE-STATUS
-+ -68 FLUSH-FILE
-+ -69 OPEN-FILE
-+ -70 READ-FILE
-+ -71 READ-LINE
-+ -72 RENAME-FILE
-+ -73 REPOSITION-FILE
-+ -74 RESIZE-FILE
-+ -75 WRITE-FILE
-+ -76 WRITE-LINE
-s q
-mkdir home
-mkdir bin
+file: help.txt
+| FORTH FILE SYSTEM HELP AND COMMANDS
+|
+| Author: Richard James Howe
+| Repo:   https://github.com/howerj/ffs
+| Email:  howe.r.j.89@gmail.com
+|
+| This is a simple DOS like file system for FORTH, it makes
+| it easier to edit and manipulate data than using raw blocks.
+|
+| For more information see:
+|
+| <https://github.com/howerj/ffs>
+| <https://github.com/howerj/subleq>
+|
+| To simplify the implementation only the `move` command can
+| move files and directories into other directories, `move`
+| also handles targets "." and "..", like `cd` does.
+|
+| To execute a file type `sh <FILE>` or `exe <FILE>`.
+|
+| Commands:
+|
+| b2f <FILE1> <FILE2>: convert block files to line/byte files
+| bcat <FILE>: display a series of blocks
+| bgrep <STRING> <FILE>: Search for <STRING> in <FILE> blocks
+| bmore <FILE>: display a file, pause for each block
+| cat <FILE>: display a file
+| cd / chdir <DIR>: change working directory to <DIR>
+| cksum <FILE>: Compute and print CRC (16-bit CCITT) of file
+| cls: clear screen
+| cmp / diff <FILE> <FILE>: compare two files
+| cp / copy <FILE1> <FILE2>: copy <FILE1> to new <FILE2>
+| deltree <FILE/DIR>: delete a file, or directory recurisvely
+| df: display file system information
+| ed / edit <FILE>: edit a <FILE> with the block editor
+| exe / sh <FILE>: execute source <FILE>
+| f2b <FILE1> <FILE2>: convert line/byte files to block files
+| fallocate <FILE> <NUM>: make <FILE> with <NUM> blocks
+| fdisk: **WARNING** formats disk deleting all data!
+| fgrow <FILE> <NUM>: grow <FILE> by <NUM> blocks
+| freeze: Freeze file system - Turn on read only mode
+| fsync: save any block changes
+| ftruncate <FILE> <NUM>: truncate <FILE> to <NUM> blocks
+| help: display a short help
+| hexdump <FILE>: hexdump a file consisting of blocks
+| login: password login (NOP if no users) (SUBLEQ eForth only)
+| ls / dir : list directory
+| lsuser: List all users in login system (SUBLEQ eFORTH only)
+| melt: Unfreeze file system - Turn off read only mode
+| mkdir <DIR>: make a directory
+| mknod <FILE> <NUM>: make a special <FILE> with <NUM>
+| mkuser <USER> <PASSWORD>: create new user entry (SUBLEQ only)
+| more <FILE>: display a file, pause for every X lines
+| mount: attempt file system mounting
+| pwd: print current working directory
+| rename <DIR/FILE1> <DIR/FILE2>: rename a file or directory
+| rm / del <FILE>: remove a <FILE> and not a <DIR>
+| rmdir <DIR>: remove an empty directory
+| sh / shell: invoke file system shell
+| stat <FILE>: display detailed information on <FILE>
+| touch / mkfile <FILE>: make a new file
+| tree: recursively print directories from the current one
+| 
+| Example commands:
+|
+| mkdir test
+| cd test
+| edit HELLO.FTH
+| 0 i .( HELLO, WORLD ) cr
+| s q
+| exe HELLO.FTH
+| rm HELLO.FTH
+| ls
+| 
+| EDITOR COMMANDS
+| This block editor is primitive but usable. It operates on
+| 1024 byte Forth blocks, with 16 lines per block. Some 
+| commands accept a line number or position.
+| q : quit editor
+| s : save work
+| n : move to next block in file, allocating one if needed
+| p : move to previous block in file
+| + <LINE>: insert <LINE>, advance line count, 'n' if needed
+| - : decrement line count, call 'p' if needed, no <LINE>
+| x : execute current file from the start
+| #line d : delete #line
+| l : list current block we are editing
+| w : list commands available to the editor
+| #line a / i <LINE>: insert <LINE> onto #line of current block
+| #line #row ia <LINE>: insert <LINE> into #line at #row
+| ? : display current block
+| z : blank current block
+| y : yank block to storage buffer
+| u : replace screen with storage buffer
+|
+| Note that it is possible to delete a file whilst editing it,
+| which is not advised but should not break anything.
+|
+| When editing a file with `edit` if the file does not exist
+| it is created.
+|
+| A typical session might look like:
+|
+| edit hello.fth
+| 0 i \ HELLO WORLD PROGRAM, VERSION #666, RJH, 15/04/2024
+| 1 i .( AHOY THERE WORLD, SALUTATIONS AND WARM GREETINGS ) cr
+| s
+| q
+| exe hello.fth
+|
+| This is a block editor, and not a freeform text editor, so
+| it does follow a strict format of 16 lines of text per block.
+|
+| "p" and "n" can be used to move forward and backward in the
+| file, a new block is assigned if "n" is at the end of the
+| file.
+;file
+file: errors.txt
+| -1  ABORT
+| -2  ABORT"
+| -3  stack overflow
+| -4  stack underflow
+| -5  return stack overflow
+| -6  return stack underflow
+| -7  do-loops nested too deeply
+| -8  dictionary overflow
+| -9  invalid memory address
+| -10 division by zero
+| -11 result out of range
+| -12 argument type mismatch
+| -13 undefined word
+| -14 interpreting a compile-only word
+| -15 invalid FORGET
+| -16 attempt to use 0-len str. as a name
+| -17 pictured numeric out. str. overflow
+| -18 parsed string overflow
+| -19 definition name too long
+| -20 write to a read-only location
+| -21 unsupported operation
+| -22 control structure mismatch
+| -23 address alignment exception
+| -24 invalid numeric argument
+| -25 return stack imbalance
+| -26 loop parameters unavailable
+| -27 invalid recursion
+| -28 user interrupt
+| -29 compiler nesting
+| -30 obsolescent feature
+| -31 >BODY used on non-CREATEd def.
+| -32 invalid name arg. (e.g., TO xxx)
+| -33 block read exception
+| -34 block write exception
+| -35 invalid block number
+| -36 invalid file position
+| -37 file I/O exception
+| -38 non-existent file
+| -39 unexpected end of file
+| -40 wrong BASE in float point convert
+| -41 loss of precision
+| -42 floating-point divide by zero
+| -43 floating-point result out of range
+| -44 floating-point stack overflow
+| -45 floating-point stack underflow
+| -46 floating-point invalid argument
+| -47 compilation word list deleted
+| -48 invalid POSTPONE
+| -49 search-order overflow
+| -50 search-order underflow
+| -51 compilation word list changed
+| -52 control-flow stack overflow
+| -53 exception stack overflow
+| -54 floating-point underflow
+| -55 floating-point unidentified fault
+| -56 QUIT
+| -57 exception in tx or rx a character
+| -58 [ IF ], [ ELSE ], or [ THEN ] exception
+| -59 ALLOCATE
+| -60 FREE
+| -61 RESIZE
+| -62 CLOSE-FILE
+| -63 CREATE-FILE
+| -64 DELETE-FILE
+| -65 FILE-POSITION
+| -66 FILE-SIZE
+| -67 FILE-STATUS
+| -68 FLUSH-FILE
+| -69 OPEN-FILE
+| -70 READ-FILE
+| -71 READ-LINE
+| -72 RENAME-FILE
+| -73 REPOSITION-FILE
+| -74 RESIZE-FILE
+| -75 WRITE-FILE
+| -76 WRITE-LINE
+;file
 .( DONE ) cr
 [then]
 
@@ -1940,13 +2011,11 @@ system +order
 wordlist +order definitions
 wordlist constant users
 
-' ok constant (prompt) ( -- xt : store ok for later use )
-
 variable proceed 0 proceed !
 : conceal $1B emit ." [8m" ; ( Could also override <emit> )
 : reveal $1B emit ." [28m" ;
 : secure users 1 set-order ; ( load password database )
-: restore only forth definitions +dos (prompt) <ok> ! ;
+: restore only forth definitions +dos [ ' ok ] literal <ok> ! ;
 : message ." user: " ; ( -- : prompt asking for user-name )
 : fail ." Invalid username or password" cr ; ( -- error msg )
 : success 1 proceed ! ." Logged in." cr ; ( signal success )
@@ -1975,20 +2044,18 @@ users +order definitions create pass , only forth definitions
 only forth definitions +dos +ffs +system
 [then]
 
-create linebuf c/blk allot
-
-\ TODO: Read-line, to save on space
 : toerror ( code file -- c u f )
   >r
   begin
-    linebuf c/blk r@ read-file 0<> swap 0= or if
+    linebuf c/blk blank
+    linebuf c/blk r@ read-line drop nip 0= if
       rdrop drop 0 0 0 exit
     then
     dup linebuf 4 -trailing numberify 2drop
   = until drop rdrop linebuf c/blk 4 /string -trailing -1 ;
 
-: >error
-  s" errors.blk" r/o open-file throw
+: >error ( n -- )
+  s" errors.txt" r/o open-file throw
   dup >r toerror r> close-file throw 
   ?exit 2drop s" unknown" ;
 
@@ -1999,77 +2066,4 @@ defined eforth [if]
 
 \ marker [START]
 
-\ Usage:
-\
-\      file: example.txt
-\      | March on, join bravely, let us to it pell mell, if not
-\      | to heaven then hand in hand to hell!
-\      ;file
-\
-\ And to append to a file:
-\
-\      append: example.txt
-\      |
-\      | More Shakespeare!
-\      |
-\      ;append
-\
-variable handle -1 handle !
 
-: -handle -1 handle ! ;
-: file: -handle token count w/o recreate-file throw handle ! ;
-: append: -handle token count w/o append-file throw handle ! ;
-: remaining source nip >in @ - ; ( -- n )
-: leftovers source nip remaining - >r source r> /string ;
-: discard source nip >in ! ; ( -- )
-: | leftovers handle @ write-line throw discard ;
-: ;file handle @ close-file -handle throw ;
-: ;append ;file ;
-
-\ TODO: If fam is r/o then we just open-file...
-: open-or-create-file ( c-addr u ior -- handle ior )
-  >r 2dup file-exists? if r> open-file exit then 
-  r> create-file ;
-
-: with-files ( "file" "file" xt -- )
-  >r
-  token count r/w open-file throw 
-  token count r/w open-or-create-file ?dup 
-    if swap close-file drop exit then
-  r> execute close-file swap close-file throw throw throw ;
-
-: (b2f) ( handle handle -- error handle handle )
-  begin
-    linebuf c/blk 3 pick read-file 0<> swap 0= or if
-      0 -rot exit
-    then
-    linebuf c/blk -trailing 2 pick write-line ?dup
-  until -rot ;
-
-: replace ( c1 c2 c-addr u -- : replace c2 with c1 )
-  begin
-    ?dup
-  while
-    over c@ 3 pick = if over 4 pick swap c! then
-    +string
-  repeat drop 2drop ;
-
-: (f2b) ( handle handle -- error handle handle )
-  begin
-    linebuf c/blk blank
-    linebuf c/blk 3 pick read-line drop nip 0= if
-      0 -rot exit
-    then
-    bl $A linebuf c/blk replace
-    bl $D linebuf c/blk replace
-    linebuf c/blk 2 pick write-file ?dup 
-  until -rot ;
-
-: b2f ( "file" "file" -- convert block file to byte file  )
-  [ ' (b2f) ] literal with-files ;
-
-: f2b ( "file" "file" -- convert byte file to block file )
-  [ ' (f2b) ] literal with-files ;
-
-: force-unlock
-;
