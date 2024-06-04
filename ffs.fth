@@ -980,6 +980,7 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
     then
   repeat drop 2r> ;
 : (remove) ( dir line f -- )
+  ro?
   2 pick locked!?
   >r 2dup dir? if
     r@ 0= ENFIL error
@@ -1131,8 +1132,6 @@ variable line 0 line !
 \ TODO: Open memory as a file.
 \ TODO: Move so the functions can be used in the utilities
 \
-
-
 \ Some useful debug words for printing out file system
 \ information:
 \
@@ -1157,10 +1156,25 @@ variable line 0 line !
 \          dup f.dline @ ." DLN: " u. cr
 \          dup f.dblk  @ ." DBK: " u. cr
 \          drop ;
-\        
+\
+ 
+\ `entry` and `required?` are used by `included`, `include`,
+\ `require` and `required` in order to prevent loading the
+\ same file twice when using `require` or `required`. They do
+\ this by adding a word to a wordlist that has the same
+\ name as the file being executed, this wordlist can be checked
+\ by future calls to `required?`.
+\       
 wordlist constant {required}
-
-\ : .require get-order {required} 1 set-order words set-order ;
+\ This prints out the files that have been `included` or
+\ `required` in the past.
+\
+\        : .require 
+\          get-order {required} 1 set-order words set-order ;
+\
+\ This really should turn a file name into a canonical file
+\ name and then remember that.
+\
 : entry ( cs -- f : create a new word if one does not exist )
   dup >r find nip ?dup if rdrop exit then
   <# r> count holds s" create  " holds 0 0 #> evaluate 0 ;
@@ -1186,7 +1200,7 @@ wordlist constant {required}
   nlen?
   dup reqbuf c!
   reqbuf 1+ swap cmove ;
-: (stdio) flg.stdout flg.stdin or ;
+: (stdio) flg.stdout flg.stdin or ; ( -- u )
 : stdio flg.wen flg.ren or (stdio) or ;
 : fam? dup stdio invert and 0<> throw ; ( fam -- fam )
 : ferror findex f.flags @ flg.error and 0<> ; ( handle -- f )
@@ -1393,18 +1407,14 @@ r/o w/o or constant r/w ( -- fam : read/write )
   repeat
   r@ fundex flush-file throw
   rdrop drop 0 ;
-
 : key-file ( file-id -- key : retrieve a single byte )
   >r key-buf 1 r> read-file 0<> swap 1 <> or if -1 exit then
   key-buf c@ ;
-
 : emit-file ( ch file-id -- ior : write a single byte )
   swap key-buf c! >r key-buf 1 r> write-file ;
-
 : write-line ( c-addr u fileid -- ior )
   dup >r write-file ?dup if rdrop exit then
   newline count r> write-file ;  
-
 \ A version that acted more like `fseek`, from C, in that it
 \ accepted `SEEK_SET`, `SEEK_CUR`, and `SEEK_END` could be
 \ build upon these words.
@@ -1419,7 +1429,6 @@ r/o w/o or constant r/w ( -- fam : read/write )
   r@ f.head @ swap
   ?dup if 1- for link next then
   r> f.blk ! 0 ; 
-
 : resize-file ( ud fileid -- ior )
   dup ferror if 2drop drop EHAND exit then
   findex >r
@@ -1459,7 +1468,6 @@ r/o w/o or constant r/w ( -- fam : read/write )
   then
   r@ fundex flush-file
   rdrop ;
-
 : recreate-file >r 2dup delete-file drop r> create-file ;
 : rewind-file >r 0 0 r> reposition-file ; ( file -- ior )
 : end-file ( file -- ior : move to the end of a file )
@@ -2093,4 +2101,24 @@ defined eforth [if]
 ' reboot <quit> !
 [then]
 
-\ marker [START]
+
+0 [if]
+: mkfill ( "file" "string" count -- )
+;
+
+: mkrandom ( "file" bytes -- )
+;
+
+: export ; ( "dir" -- export file system )
+
+: wc
+  token count r/o open-file throw >r
+  bl
+  begin
+    r@ key-file dup 0>=
+  while ( lines words prev key )
+    dup $A  = if then
+    dup bl <= if over >= if then then
+  repeat 2drop
+  r> close-file throw ;
+[then]

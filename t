@@ -8,7 +8,20 @@
 # Unit tests for a Block Based Forth File System
 #
 
-set +eux
+set -eu
+
+# Unit Test Framework
+UNIT=$(
+cat <<'EOF'
+marker [UNIT]
+: .fail cr source type cr ." [FAIL]" cr bye ;
+: .pass cr ." [PASS]" cr bye ;
+: +> token find 0= if .fail then catch 0= ?exit .fail ;
+: -> token find 0= if .fail then catch 0<> ?exit .fail ;
+: exists? token count file-exists? 0<> ?exit .fail ;
+: unexists? token count file-exists? 0= ?exit .fail ;
+EOF
+)
 
 reset () {
 	make clean
@@ -17,11 +30,52 @@ reset () {
 
 # TODO: Select gforth or subleq
 run () {
+	reset
 	make run
 	#make forth
 }
 
-reset
+
+TFILE=$(tempfile)
+trap 'rm -fv -- "${TFILE}"' EXIT
+PROG=$(
+cat <<'EOF'
+unexists? 1.txt
+fallocate 1.txt 1
+exists? 1.txt
+-> mkdir
+-> rmdir
+\ -> rmdir 1.txt ( fails! )
+rm 1.txt
+unexists? 1.txt
+mkdir a
+exists? a
+mkdir b
+-> rm b
+exists? b
+exists? a
+mv a c
+unexists? a
+exists? c
+ls
+file: test.fth
+| : example ." HELLO" ;
+;file
+require test.fth
++> example
+rm test.fth
+unexists? test.fth
+
+
+.pass
+EOF
+)
+
+echo "${UNIT}" "${PROG}" | run | tee ${TFILE}
+grep -v '^\[FAIL\]' ${TFILE} > /dev/null
+grep '^\[PASS\]' ${TFILE} > /dev/null
+rm ${TFILE}
+exit
 
 run << EOF
 dos
@@ -112,5 +166,6 @@ ls
 
 
 EOF
+
 
 
