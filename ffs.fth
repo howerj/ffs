@@ -238,9 +238,6 @@
 \
 \ TODO: Better path parsing? Rework commands for better
 \ source/destination handling.
-\ TODO: More line-oriented utilities, rename block oriented
-\ utilities?
-\ TODO: DOS shell
 \ TODO: CRC on files / data-structures in file system?
 \ TODO: Simple regex/glob engine
 \ TODO: Check disk routine, undelete?
@@ -248,7 +245,8 @@
 \ it is a head-block.
 \ TODO: Hex-editor
 \ TODO: Dump file system command
-\ TODO: Replace um/mod where possible with `and` and shifting
+\ TODO: execute/grep that is line oriented
+\
 \
 
 defined (order) 0= [if]
@@ -264,7 +262,7 @@ defined (order) 0= [if]
 defined eforth [if]
 system +order
 : wordlist here cell allot 0 over ! ; ( -- wid : alloc wid )
-\ : quine source type cr ; ' quine <ok> !
+: quine source type cr ; ' quine <ok> !
 [else]
 use ffs.fb
 [then]
@@ -300,7 +298,7 @@ defined dmin 0= [if]
 : dmin 2over 2over d> if 2swap then 2drop ; ( d1 d2 -- d )
 [then]
 
-: dsignum ( d -- n )
+: dsignum ( d -- n : double cell signum function )
   2dup 0 0 d= if 2drop  0 exit then
        0 0 d< if       -1 exit then
                         1 ;
@@ -480,8 +478,23 @@ variable dirp 0 dirp !           \ Directory Stack Pointer
 variable read-only 0 read-only ! \ Make file system read only 
 $0100 constant version           \ File System version
 
+cell 2 = ?\ $8000 constant #msb
+cell 4 = ?\ $80000000 constant #msb
+cell 8 = ?\ $8000000000000000 constant #msb
+
+: d2* over #msb and >r 2* swap 2* swap r> if 1 or then ;
+: d2/ dup   1 and >r 2/ swap 2/ r> if #msb or then swap ;
+: dlshift begin ?dup while >r d2* r> 1- repeat ; ( d u -- d )
+: drshift begin ?dup while >r d2/ r> 1- repeat ; ( d u -- d )
+: dand rot and >r and r> ; ( d d -- d )
+: dor rot or >r or r> ; ( d d -- d )
+: dxor rot xor >r xor r> ; ( d d -- d )
+: bbuf/ ( d -- rem quo : div/mod by 1024 )
+  over 1023 and >r 10 drshift drop r> swap ;
+: hbuf/ ( d -- rem quo : div/mod by 512 )
+  over 511 and >r 9 drshift drop r> swap ; 
 : fatcnt ( -- : FAT blocks need to store file system )
-  0 b/buf 2/ um/mod swap 0<> negate + ;
+  0 hbuf/ ( b/buf 2/ um/mod ) swap 0<> negate + 1 max ;
 
 \ It would be better if these constants were set a run time,
 \ but it is not necessary. It does mean the user of this
@@ -513,7 +526,6 @@ variable insensitive 0 insensitive ! \ Case insensitivity
 variable fatal 0 fatal ! \ Has a fatal error occurred?
 variable handle -1 handle ! \ Used with `file:`
 create linebuf c/blk allot  \ Used as temporary line buffer
-
 
 8 constant fopen-max
 7 cells constant fhandle-size
@@ -588,6 +600,15 @@ defined eforth [if] : numberify number? ; [else]
     1+
   repeat
   drop rdrop 0 ;
+: ferase findex fhandle-size erase ; ( fhandle -- )
+: force-unlock ( -- : force unlocking file system )
+  1 ( ignore handle 0, as it contain stdin/stdout/stderr... )
+  begin
+    dup fopen-max <
+  while
+    dup ferase
+    1+
+  repeat drop ;
 : locked!? locked? ELOCK error ; ( dir -- )
 : equate insensitive @ if icompare exit then compare ;
 : examine insensitive @ if isearch exit then search ;
@@ -783,11 +804,7 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
   repeat r> nip ;
 
 : link-load [ ' +load ] literal apply ; ( file -- )
-: link-list [ ' +list ] literal apply ; ( file -- )
 : link-blank [ ' bblk ] literal apply ; ( file -- )
-: link-erase [ ' fblk ] literal apply ; ( file -- )
-: link-u [ ' u. ] literal apply ; ( file -- )
-: link-grep [ ' (grep) ] literal apply ; ( file -- )
 : more? key [ 32 invert ] literal and [char] Q = ;
 : more> cr ." --- (q)uit? --- " ;
 : moar +list more> more? ;
@@ -941,15 +958,27 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
   repeat drop 0 ;
 \ TODO: Implement this, Handle "." and "..", add flag to
 \ indicate ".." used, or not current dir.
-\ : resolve ( c-addr u -- dir line )
-\   peekd -rot 0 -rot
-\   begin
-\    ?dup
-\   while
-\     2dup ndir >r over fcopy r> if
-\     else
-\     then
-\   repeat drop ; 
+: resolve ( c-addr u -- dir line n )
+  dup 0= throw
+  over c@ [char] / = if dirstart else peekd then
+  >r 0 >r
+
+  begin
+    ?dup
+  while
+    2dup ndir if
+      \ TODO: Handle "." and ".." here
+      ( c-addr u1 u2 ) 2 pick over 2>r /string 2r>
+      r@ dir-find dup 0< if
+        
+      else
+        drop 2drop 2r> -1 exit
+      then
+    else
+      drop over c@ [char] / <> throw
+      +string
+    then
+  repeat drop 2r> ;
 : (remove) ( dir line f -- )
   2 pick locked!?
   >r 2dup dir? if
@@ -1148,7 +1177,6 @@ wordlist constant {required}
    1+
   repeat
   drop -1 0 ;
-: ferase findex fhandle-size erase ; ( fhandle -- )
 : take ( -- ptr f : take a free handle if one exists )
   unused? 0= if 0 exit then
   dup ferase
@@ -1386,7 +1414,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
   r@ f.flags @ (stdio) and 0<> if rdrop 2drop ESEEK exit then
   r@ fundex file-size ?dup if rdrop 2drop 2drop exit then
   dmin
-  b/buf um/mod swap ( cnt rem )
+  bbuf/ swap ( cnt rem ) ( b/buf um/mod swap )
   r@ f.pos ! ( cnt )
   r@ f.head @ swap
   ?dup if 1- for link next then
@@ -1404,7 +1432,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
     drop 2drop rdrop 0 exit
   then
   0< if \ Shrink
-    b/buf um/mod 1+ 
+    bbuf/ 1+ ( b/buf um/mod 1+ )
     ?dup if r@ f.blk @ btruncate then 
     r@ f.end !
 
@@ -1420,7 +1448,8 @@ r/o w/o or constant r/w ( -- fam : read/write )
   r@ fundex file-length ?dup if \ Get length...again
     rdrop >r 2drop 2drop r> exit
   then
-  d- b/buf um/mod ?dup if
+  ( d- b/buf um/mod ?dup if )
+  d- bbuf/ ?dup if
     ballocs r@ f.head @ fat-append
   then
   r@ f.end +! r@ f.end @ b/buf > if
@@ -1645,7 +1674,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
 : bgrep ( search file -- : search a file for a string )
   token count dup grepl ! mcopy
   narg namebuf peekd dir-find dup 0< EFILE error
-  peekd swap dirent-blk@ link-grep ; 
+  peekd swap dirent-blk@ [ ' (grep) ] literal apply ; 
 : rm ro? narg 0 (rm) ; ( "file" -- )
 : rmdir ro? narg 1 (rm) ; ( "dir" -- )
 : cd ( "dir" -- : change the Present Working Directory )
@@ -1709,7 +1738,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
     then 
   repeat 2drop
   r> close-file throw ." EOF" cr ;
-: bcat (file) link-list ; ( "file" -- )
+: bcat (file) [ ' +list ] literal apply ; ( "file" -- )
 : bmore (file) link-more ; ( "file" -- )
 : exe (file) link-load  ; ( "file" -- )
 : hexdump ( "file" -- : nicely formatted hexdump of file )
@@ -1733,7 +1762,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
   cr 2dup dirent-rem@ ." REMB: " u.
   cr      dirent-blk@ dup bcount ." BCNT: " u. 
   cr  dup ." HEAD: " u.
-  cr ." BLKS: " link-u ;
+  cr ." BLKS: " [ ' u. ] literal apply ;
 : b2f ( "file" "file" -- convert block file to byte file  )
   [ ' (b2f) ] literal with-files ;
 : f2b ( "file" "file" -- convert byte file to block file )
@@ -2044,7 +2073,7 @@ users +order definitions create pass , only forth definitions
 only forth definitions +dos +ffs +system
 [then]
 
-: toerror ( code file -- c u f )
+: (toerror) ( code file -- c u f )
   >r
   begin
     linebuf c/blk blank
@@ -2054,9 +2083,9 @@ only forth definitions +dos +ffs +system
     dup linebuf 4 -trailing numberify 2drop
   = until drop rdrop linebuf c/blk 4 /string -trailing -1 ;
 
-: >error ( n -- )
+: toerror ( n -- c-addr u )
   s" errors.txt" r/o open-file throw
-  dup >r toerror r> close-file throw 
+  dup >r (toerror) r> close-file throw 
   ?exit 2drop s" unknown" ;
 
 defined eforth [if]
@@ -2065,5 +2094,3 @@ defined eforth [if]
 [then]
 
 \ marker [START]
-
-
