@@ -23,16 +23,29 @@ marker [UNIT]
 EOF
 )
 
+#FORTH=subleq
+FORTH=gforth
+
+disk() {
+	if [ ! -f disk.dec ]; then
+		make disk;
+	fi;
+}
+
 reset () {
-	make clean
-	make ffs.fb
+	make clean;
+	if [ "${FORTH}" = "gforth" ]; then
+		make ffs.fb;
+	else
+		disk
+	fi;
 }
 
 # TODO: Select gforth or subleq
 run () {
 	reset
 	make run
-	#make forth
+	#make disk
 }
 
 
@@ -166,6 +179,4 @@ ls
 
 
 EOF
-
-
 

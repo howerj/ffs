@@ -898,14 +898,14 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
 : copy> addr? copy-store swap b/buf cmove modify ;
 : >dir >la swap addr? + dirent-store dirsz cmove ; 
 : dir> >la swap addr? + dirent-store swap dirsz cmove modify ;
-: fmtdir ( c-addr u dir -- )
-  dup bblk
+: dirent ( c-addr u dir -- )
   >r fcopy
   [char] \ r@ 0 dirent-type!
   findbuf r@ 0 dirent-name!
   #rem r@ 0 dirent-rem!
   r@ r> 0 dirent-blk! 
   save ;
+: fmtdir dup bblk dirent ; ( c-addr u dir -- )
 : dir-find ( c-addr u blk -- line | -1 )
   >r fcopy
   \ We could extend this to not find much more if needed,
@@ -1078,7 +1078,7 @@ variable line 0 line !
   namebuf r@ dir-find dup 0< EFILE error r> swap ;
 : (file) ( "file" -- blk )
   peekd (entry)
-  2dup dirent-type@ [char] D = ENFIL error
+  2dup dir? ENFIL error
   dirent-blk@ ;
 : found? peekd eline? ; ( -- cwd line )
 : dfull? empty? dup eline ! -1 = EDFUL error ; ( blk -- )
@@ -1290,12 +1290,18 @@ r/o w/o or constant r/w ( -- fam : read/write )
   ncopy namebuf peekd dir-find dup 0< EFILE error
   peekd swap dirent-blk@ link-load ; 
 : include token count included ; ( "file" -- )
-: required ( c-addr u -- )
+: required ( c-addr u -- : execute file, only once )
   pack reqbuf dup count mcopy required? ?exit reqbuf count
   included ;
-: require ( "name" -- )
+: require ( "name" -- : execute file, only once )
   token dup count mcopy
   required? ?exit movebuf included ;
+\ TODO: Fix this, this also applies to `rename` and `move`,
+\ need to call `dirent`.
+\ not erase all the sub-entries.
+\ BUG: Renaming directory does not change directory name
+\ within directory block, only within containing directory
+\ entry
 : rename-file ( c-addr1 u1 c-addr2 u2 -- ior ) 
   ro?
   peekd locked!?
@@ -1303,6 +1309,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
   namebuf peekd dir-find dup >r 0< if rdrop EFILE exit then
   movebuf peekd dir-find 0>= if rdrop EEXIS exit then
   findbuf peekd r> dirent-name! 0 ;
+\ TODO: BUG: Probably related to catching, wrong stack items
 : delete-file ( c-addr u -- ior )
   ncopy 0 [ ' (rm) ] literal catch ?dup if nip then ; 
 : file-position ( fileid -- ud ior ) 
@@ -1468,7 +1475,10 @@ r/o w/o or constant r/w ( -- fam : read/write )
   then
   r@ fundex flush-file
   rdrop ;
-: recreate-file >r 2dup delete-file drop r> create-file ;
+: recreate-file 
+  >r 2dup file-exists? 
+  if 2dup delete-file ?dup if rdrop >r 2drop r> exit then then
+  r> create-file ;
 : rewind-file >r 0 0 r> reposition-file ; ( file -- ior )
 : end-file ( file -- ior : move to the end of a file )
   dup >r file-length ?dup if 2drop rdrop exit then
@@ -1478,6 +1488,9 @@ r/o w/o or constant r/w ( -- fam : read/write )
   r@ end-file ?dup if r> close-file drop exit then
   r> 0 ;
 
+\ TODO: Improve this by searching for a line with a single
+\ ".", and replacing "..+" with ".+".
+\
 \ Usage:
 \
 \      file: example.txt
@@ -1504,6 +1517,28 @@ r/o w/o or constant r/w ( -- fam : read/write )
 : ;file handle @ close-file -handle throw ;
 : ;append ;file ;
 
+\ : hex: 
+\   token count w/o .s cr recreate-file throw
+\   base @ >r hex
+\   >r
+\   begin
+\     query
+\     token count 2dup s" ." compare if
+\       begin
+\         bl word ?dup
+\       while
+\         count numberify nip 0= if 
+\           r> close-file r> base ! throw exit
+\         then
+\         r@ emit-file 0<> if 
+\           r> close-file r> base ! throw exit
+\         then
+\       repeat  
+\     else
+\       r> close-file r> base ! throw exit
+\     then
+\   again ;
+\ 
 {ffs} +order definitions
 
 : (cksum) ( file-id -- cksum )
@@ -1555,6 +1590,22 @@ r/o w/o or constant r/w ( -- fam : read/write )
   token count r/w open-or-create-file ?dup 
     if swap close-file drop exit then
   r> execute close-file swap close-file throw throw throw ;
+
+: (hexhump) ( c-addr u -- : hex dump a file )
+  r/o open-file throw 
+  base @ >r hex
+  >r
+  0 begin
+    r@ key-file dup 0>=
+  while
+    swap dup $F and 0= if
+      cr dup 4 u.r ." : "
+    then swap
+    \ N.B. Under SUBLEQ eForth `.` is much faster.
+    0 <# bl hold # #s #> type
+    1+
+  repeat 2drop
+  r> close-file r> base ! throw ;
 
 {dos} +order definitions
 
@@ -1708,7 +1759,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
     dup d/blk <
   while
     peekd over dirent-type@ bl <= if drop exit then
-    peekd over dirent-type@ [char] D = if
+    peekd over dir? if
       peekd over dirent-blk@ pushd recurse popd drop
     then
     1+
@@ -1749,21 +1800,9 @@ r/o w/o or constant r/w ( -- fam : read/write )
 : bcat (file) [ ' +list ] literal apply ; ( "file" -- )
 : bmore (file) link-more ; ( "file" -- )
 : exe (file) link-load  ; ( "file" -- )
+
 : hexdump ( "file" -- : nicely formatted hexdump of file )
-  token count r/o open-file throw 
-  base @ >r hex
-  >r
-  cr 0 begin
-    r@ key-file dup 0>=
-  while
-    swap dup $F and 0= if
-      cr dup 4 u.r ." : "
-    then swap
-    \ N.B. Under SUBLEQ eForth `.` is much faster.
-    0 <# bl hold # #s #> type
-    1+
-  repeat 2drop
-  r> close-file r> base ! throw ;
+  token count (hexhump) ;
 : stat ( "file" -- : detailed file stats )
   peekd (entry) 
   cr 2dup .type 
@@ -2122,3 +2161,36 @@ defined eforth [if]
   repeat 2drop
   r> close-file throw ;
 [then]
+
+: export ( -- : export file system )
+  dsl
+  begin
+    dup d/blk <
+  while
+    peekd over dirent-type@ bl <= if 
+      ." cd .." cr drop exit 
+    then
+    peekd over special? if
+      peekd over ." mknod " dirent-blk@ u. cr
+    then
+    peekd over file? if
+      \ peekd over ." file: " dirent-name@ type cr
+      \ ." ;file" cr
+      peekd over ." hex: " dirent-name@ type
+      peekd over dirent-name@ (hexhump) cr
+      ." ." cr
+    then
+    peekd over dir? if
+      peekd over ." mkdir " dirent-name@ type cr
+      peekd over ." cd " dirent-name@ type cr
+      peekd over dirent-blk@ pushd recurse popd drop
+    then
+    1+
+  repeat drop ; 
+
+
+\ hex: xeRp.txt
+\ 0: 0 1 2 
+\ .
+\ 
+
