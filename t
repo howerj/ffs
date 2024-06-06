@@ -7,8 +7,6 @@
 #
 # Unit tests for a Block Based Forth File System
 #
-# TODO: Run through shell check
-#
 
 set -eu
 

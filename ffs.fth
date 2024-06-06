@@ -248,10 +248,7 @@
 \ TODO: Check disk routine, undelete?
 \ TODO: Given a block find the file it belongs to and whether
 \ it is a head-block.
-\ TODO: Hex-editor
-\ TODO: Dump file system command
 \ TODO: execute/grep that is line oriented
-\
 \
 
 defined (order) 0= [if]
@@ -859,13 +856,17 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
 : peekd popd dup pushd ; ( -- dir )
 : nlen? dup maxname > -1 and throw ; ( n -- n )
 : nclear namebuf blank ; ( -- )
-: ncopy nclear nlen? namebuf drop swap cmove ; ( c-addr u )
+: ncopy over namebuf drop = if 2drop exit then
+  nclear nlen? namebuf drop swap cmove ; ( c-addr u )
 : fclear findbuf blank ; ( -- )
-: fcopy fclear nlen? findbuf drop swap cmove ; ( c-addr u )
+: fcopy over findbuf drop = if 2drop exit then
+  fclear nlen? findbuf drop swap cmove ; ( c-addr u )
 : cclear compbuf blank ; ( -- )
-: ccopy cclear nlen? compbuf drop swap cmove ; ( c-addr u )
+: ccopy over compbuf drop = if 2drop exit then
+  cclear nlen? compbuf drop swap cmove ; ( c-addr u )
 : mclear movebuf blank ; ( -- )
-: mcopy mclear nlen? movebuf drop swap cmove ; ( c-addr u )
+: mcopy over movebuf drop = if 2drop exit then
+  mclear nlen? movebuf drop swap cmove ; ( c-addr u )
 : .hex base @ >r hex 0 <# # # # # #> type r> base ! ;
 : hexp base @ >r hex 0 <# # # # # [char] $ hold #> r> base ! ;
 : cvalid ( ch -- f : is character valid for a dir name? )
@@ -1133,9 +1134,7 @@ variable line 0 line !
 \        DIR-LINE: 16/cell
 \        DIR-BLK:  16/cell
 \
-\ TODO: Optionally allow directories to be opened up
 \ TODO: Open memory as a file.
-\ TODO: Move so the functions can be used in the utilities
 \
 \ Some useful debug words for printing out file system
 \ information:
@@ -1249,7 +1248,8 @@ r/o w/o or constant r/w ( -- fam : read/write )
     rdrop drop -1 EFILE exit 
   then
   \ We might want to be able to open up directories, at least
-  \ in a read-only manner...
+  \ in a read-only manner, this can be done by removing this
+  \ line.
   peekd over dir? if rdrop drop 0 ENFIL exit then
   take 0= if rdrop 2drop -1 EHAND exit then
   dup r> swap >r >r
@@ -1266,7 +1266,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
 : file-error? ( fileid -- f )
   findex f.flags @ flg.error and 0<> ;
 : create-file ( c-addr u fam -- fileid ior )
-  fam? >r 2dup ncopy full? 0 [ ' (mkfile) ] literal catch
+  ro? fam? >r 2dup ncopy full? 0 [ ' (mkfile) ] literal catch
   ?dup if nip nip nip -1 swap rdrop exit then save
   r> open-file ; 
 : flush-file ( fileid -- ior )
@@ -1301,12 +1301,6 @@ r/o w/o or constant r/w ( -- fam : read/write )
 : require ( "name" -- : execute file, only once )
   token dup count mcopy
   required? ?exit movebuf included ;
-\ TODO: Fix this, this also applies to `rename` and `move`,
-\ need to call `dirent`.
-\ not erase all the sub-entries.
-\ BUG: Renaming directory does not change directory name
-\ within directory block, only within containing directory
-\ entry
 : rename-file ( c-addr1 u1 c-addr2 u2 -- ior ) 
   ro?
   peekd locked!?
@@ -1338,7 +1332,6 @@ r/o w/o or constant r/w ( -- fam : read/write )
 : file-status ( c-addr u -- x ior )
   r/o open-file ?dup if exit then
   close-file 0 swap ;
-
 : read-file ( c-addr u fileid -- u ior )
   dup ferror if 2drop drop 0 0 EHAND exit then
   over >r >r 2dup erase r>
@@ -1360,7 +1353,6 @@ r/o w/o or constant r/w ( -- fam : read/write )
     /string
   repeat
   rdrop drop r> 0 ;
-
 : read-line ( c-addr u fileid -- u flag ior ) 
   dup ferror if 2drop drop 0 0 EHAND exit then
   over >r >r
@@ -1388,7 +1380,6 @@ r/o w/o or constant r/w ( -- fam : read/write )
   repeat
   drop
   rdrop r> 0 0 ; 
-
 : write-file ( c-addr u fileid -- ior ) 
   dup ferror if 2drop drop EHAND exit then
   findex dup f.flags @ flg.wen and 
@@ -1593,7 +1584,13 @@ r/o w/o or constant r/w ( -- fam : read/write )
    init block? load 0 dirp ! dirstart pushd ;
 : freeze 1 read-only ! ; ( -- : make file system read only )
 : melt 0 read-only ! ; ( -- : allowing writing to file system )
-: fdisk melt bcheck fmt.init fmt.fat fmt.blks fmt.root mount ; 
+: fdisk melt bcheck fmt.init fmt.fat fmt.blks fmt.root mount ;
+\ TODO: Fix this, this also applies to `rename` and `move`,
+\ need to call `dirent`.
+\ not erase all the sub-entries.
+\ BUG: Renaming directory does not change directory name
+\ within directory block, only within containing directory
+\ entry
 : rename ( "file" "file" -- : rename a file )
   ( `locked!?` does not need to be called )
   ro?
@@ -1688,6 +1685,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
   #rem found? dirent-rem!
   r> found? dirent-blk! 
   [char] S found? dirent-type! ;
+\ TODO: normal grep
 : bgrep ( search file -- : search a file for a string )
   token count dup grepl ! mcopy
   narg namebuf peekd dir-find dup 0< EFILE error
@@ -1850,7 +1848,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
 \        01 20
 \        .
 \
-: hex:
+: hex: ( "file" -- )
   token count w/o recreate-file throw
   base @ >r hex
   cr
@@ -1866,14 +1864,14 @@ r/o w/o or constant r/w ( -- fam : read/write )
 \ : chkdsk ;
 
 \ Aliases
-: chdir cd ;
-: cls page ;
-: cp copy ;
-: del rm ;
-: ed edit ;
-: sh exe ;
-: touch mkfile ;
-: diff cmp ;
+: chdir cd ; ( "dir" -- change Present Working Directory )
+: cls page ; ( -- : clear screen )
+: cp copy ; ( "file" "file" -- copy file )
+: del rm ; ( "file" -- delete file )
+: ed edit ; ( "file" -- edit file )
+: sh exe ; ( "file" -- execute file )
+: touch mkfile ; ( "file" -- : create a file )
+: diff cmp ; ( "file" "file" -- : compare two files )
 ( : bye halt ; ) \ Clashes with FORTHs `bye`word.
 ( : exit halt ; ) \ Clashes with FORTHs `exit` word.
 ( : quit halt ; ) \ Clashes with FORTHs `quit` word.
@@ -2207,18 +2205,55 @@ defined eforth [if]
 [then]
 
 
-0 [if]
 : mkfill ( "file" "string" count -- )
-;
+  ro? narg token count mcopy integer?
+  namebuf w/o create-file throw >r
+  begin
+    ?dup
+  while
+    movebuf r@ write-line drop
+    1-
+  repeat
+  r> close-file throw ;
 
+0 [if]
+( =================== Pseudo Random Numbers ================= )
+\ This section implements a Pseudo Random Number generator, it
+\ uses the xor-shift algorithm to do so.
+\ See:
+\ https://en.wikipedia.org/wiki/Xorshift
+\ http://excamera.com/sphinx/article-xorshift.html
+\ http://xoroshiro.di.unimi.it/
+\ 
+\ The constants used have been collected from various places
+\ on the web and are specific to the size of a cell.
+\ 
+cell 2 = ?\ 13 constant a 9  constant b 7  constant c
+cell 4 = ?\ 13 constant a 17 constant b 5  constant c
+cell 8 = ?\ 12 constant a 25 constant b 27 constant c
+
+7 variable seed ( must not be zero )
+
+: seed! ( x -- : set the value of the PRNG seed )
+  dup 0= if drop 7 ( zero not allowed ) then seed ! ;
+
+: random ( -- x : random number )
+  seed @
+  dup a lshift xor
+  dup b rshift xor
+  dup c lshift xor
+  dup seed! ;
+
+\ hide{ a b c seed }hide
 : mkrandom ( "file" bytes -- )
+  ro? narg integer? >r
 ;
+\ TODO: seed by cksum of file system for entropy?
 
+( =================== Random Numbers ======================== )
 [then]
 
 
-\ hex: xeRp.txt
-\ 0: 0 1 2 
-\ .
-\ 
+
+
 
