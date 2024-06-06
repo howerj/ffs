@@ -214,31 +214,36 @@
 \ only some of which will, writing down these potentialities
 \ can be a sort of catharsis in lieu of doing the actual work
 \ to resolve them. As to what can be done we could; implement
-\ more commands, have optional case insensitivity, raise the
-\ limit on some of the file system limits, refactor many of
-\ the words, improve error handling and detection, calculate
-\ fragmentation and offer a way to defragment the file system,
-\ perform error checking on the file systems data-structures
-\ and orphaned nodes, offer a way to securely erase files,
-\ make a utility in C for manipulating the file system and
-\ importing and exporting files to it, parse full paths in
-\ commands (e.g. `a/b/c`), allow zero length files, add more
-\ file system meta-data, write unit tests, rewrite `list` so
-\ we have more control over how things look like, make a better
-\ more DOS like shell, differing blocks sizes, a primitive
-\ journal just temporary FAT directories and more. 
+\ more commands, refactor many of the words, improve error 
+\ handling and detection, calculate fragmentation and offer a 
+\ way to defragment the file system, perform error checking on 
+\ the file systems data-structures and orphaned nodes, offer a 
+\ way to securely erase files, perhaps add checksums on the
+\ file systems data structures and files, make a utility in C 
+\ for manipulating the file system and importing and exporting 
+\ files to it, allow zero length files, add more file system 
+\ meta-data, rewrite `list` so we have more control over how 
+\ things look like, make a better more DOS like shell, 
+\ differing blocks sizes, a primitive journal just temporary 
+\ FAT directories and more. 
 \
 \ The following provides a way to calculate fragmentation:
 \ <https://stackoverflow.com/questions/4586972>, which will be
 \ very slow on the SUBLEQ system.
 \
+\ Checksums, as mentioned, could be added to the file system
+\ to give some guarantee that the data has not been corrupted.
+\ If it were to be added adding it to the FAT, then to each
+\ directory, and then to each file. Adding checksums to the
+\ FAT would be easy, and little effort, adding to directories
+\ still fairly easy, and to files it would involve a higher
+\ effort, but more importantly the file systems performance
+\ would suffer when writing data.
+\
 \ Some file system features there is no intention to ever
 \ implement (such as hard or symbolic links), partly due to
 \ file system limitations and partly due to a lack of need.
 \
-\ TODO: Better path parsing? Rework commands for better
-\ source/destination handling.
-\ TODO: CRC on files / data-structures in file system?
 \ TODO: Simple regex/glob engine
 \ TODO: Check disk routine, undelete?
 \ TODO: Given a block find the file it belongs to and whether
@@ -617,8 +622,8 @@ defined eforth [if] : numberify number? ; [else]
 : token bl word dup nul? EARGU error ; ( -- b )
 : grab ( <word> -- a : get word from input stream  )
   begin bl word dup nul? 0= ?exit drop query again ;
-: integer grab count numberify nip ; ( <num> -- n f : get int )
-: integer? integer 0= dpl @ 0>= or -$18 and throw ;
+: integer grab count numberify nip dpl @ 0< and ; 
+: integer? integer 0= -$18 and throw ;
 : modify read-only @ 0= if update then ;
 : save read-only @ 0= if update save-buffers then ;
 : fatal? fatal @ 0<> throw ;
@@ -1309,9 +1314,8 @@ r/o w/o or constant r/w ( -- fam : read/write )
   namebuf peekd dir-find dup >r 0< if rdrop EFILE exit then
   movebuf peekd dir-find 0>= if rdrop EEXIS exit then
   findbuf peekd r> dirent-name! 0 ;
-\ TODO: BUG: Probably related to catching, wrong stack items
 : delete-file ( c-addr u -- ior )
-  ncopy 0 [ ' (rm) ] literal catch ?dup if nip then ; 
+  ncopy 0 [ ' (rm) ] literal catch dup if nip then ; 
 : file-position ( fileid -- ud ior ) 
   dup ferror if drop 0 0 EHAND exit then
   findex >r
@@ -1475,8 +1479,8 @@ r/o w/o or constant r/w ( -- fam : read/write )
   then
   r@ fundex flush-file
   rdrop ;
-: recreate-file 
-  >r 2dup file-exists? 
+: recreate-file ( c-addr u fam -- handle ior )
+  >r 2dup file-exists?
   if 2dup delete-file ?dup if rdrop >r 2drop r> exit then then
   r> create-file ;
 : rewind-file >r 0 0 r> reposition-file ; ( file -- ior )
@@ -1488,58 +1492,12 @@ r/o w/o or constant r/w ( -- fam : read/write )
   r@ end-file ?dup if r> close-file drop exit then
   r> 0 ;
 
-\ TODO: Improve this by searching for a line with a single
-\ ".", and replacing "..+" with ".+".
-\
-\ Usage:
-\
-\      file: example.txt
-\      | March on, join bravely, let us to it pell mell, if not
-\      | to heaven then hand in hand to hell!
-\      ;file
-\
-\ And to append to a file:
-\
-\      append: example.txt
-\      |
-\      | More Shakespeare!
-\      |
-\      ;append
-\
+{ffs} +order definitions
 
-: -handle -1 handle ! ;
-: file: -handle token count w/o recreate-file throw handle ! ;
-: append: -handle token count w/o append-file throw handle ! ;
 : remaining source nip >in @ - ; ( -- n )
 : leftovers source nip remaining - >r source r> /string ;
+: -handle -1 handle ! ;
 : discard source nip >in ! ; ( -- )
-: | leftovers handle @ write-line throw discard ;
-: ;file handle @ close-file -handle throw ;
-: ;append ;file ;
-
-\ : hex: 
-\   token count w/o .s cr recreate-file throw
-\   base @ >r hex
-\   >r
-\   begin
-\     query
-\     token count 2dup s" ." compare if
-\       begin
-\         bl word ?dup
-\       while
-\         count numberify nip 0= if 
-\           r> close-file r> base ! throw exit
-\         then
-\         r@ emit-file 0<> if 
-\           r> close-file r> base ! throw exit
-\         then
-\       repeat  
-\     else
-\       r> close-file r> base ! throw exit
-\     then
-\   again ;
-\ 
-{ffs} +order definitions
 
 : (cksum) ( file-id -- cksum )
   >r
@@ -1591,21 +1549,21 @@ r/o w/o or constant r/w ( -- fam : read/write )
     if swap close-file drop exit then
   r> execute close-file swap close-file throw throw throw ;
 
-: (hexhump) ( c-addr u -- : hex dump a file )
-  r/o open-file throw 
+: (hexhump) ( c-addr u f -- : hex dump a file, optional addr )
+  >r r/o open-file throw r> 
   base @ >r hex
-  >r
+  >r >r
   0 begin
     r@ key-file dup 0>=
   while
     swap dup $F and 0= if
-      cr dup 4 u.r ." : "
+      cr r> r> tuck >r >r if dup 4 u.r ." : " then
     then swap
     \ N.B. Under SUBLEQ eForth `.` is much faster.
     0 <# bl hold # #s #> type
     1+
   repeat 2drop
-  r> close-file r> base ! throw ;
+  r> close-file rdrop r> base ! throw ;
 
 {dos} +order definitions
 
@@ -1780,7 +1738,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
   cr cr ." Otherwise visit <https://github.com/howerj/ffs>"
   cr cr ." Command List: " cr words cr cr ;
 : cat ( "file" -- )
-  token count r/o open-file throw
+  token count r/o open-file throw cr
   >r
   begin r@ key-file dup 0>= while emit repeat drop
   r> close-file throw ;
@@ -1802,7 +1760,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
 : exe (file) link-load  ; ( "file" -- )
 
 : hexdump ( "file" -- : nicely formatted hexdump of file )
-  token count (hexhump) ;
+  token count -1 (hexhump) ;
 : stat ( "file" -- : detailed file stats )
   peekd (entry) 
   cr 2dup .type 
@@ -1817,10 +1775,95 @@ r/o w/o or constant r/w ( -- fam : read/write )
 {edlin} +order
 : edit ro? narg (create) dup (round) edlin ; ( "file" -- )
 {edlin} -order
+: export ( -- : export file system )
+  dsl
+  begin
+    dup d/blk <
+  while
+    peekd over dirent-type@ bl <= if 
+      ." cd .." cr drop exit 
+    then
+    peekd over special? if
+      peekd over ." mknod " dirent-blk@ u. cr
+    then
+    peekd over file? if
+      \ We could determine if the file is a binary file,
+      \ and if it is not, do a text dump instead.
+      peekd over ." hex: " dirent-name@ type
+      peekd over dirent-name@ 0 (hexhump) cr
+      ." ." cr
+    then
+    peekd over dir? if
+      peekd over ." mkdir " dirent-name@ type cr
+      peekd over ." cd " dirent-name@ type cr
+      peekd over dirent-blk@ pushd recurse popd drop
+    then
+    1+
+  repeat drop ; 
+\ We could also detect if the file is binary, and then
+\ extract the logic into another word so we can determine if
+\ files are block oriented (non binary files with no newlines),
+\ or not.
+: wc ( "file" -- display file byte/word/line count )
+  token count r/o open-file throw >r
+  0 0 bl
+  begin
+    r@ key-file dup 0>=
+  while ( lines words prev key )
+    dup $A  = if >r >r >r 1+ r> r> r> then
+    dup bl <= if over bl > if >r >r 1+ r> r> then then
+    nip
+  repeat 2drop
+  cr
+  ." BYTES: " r@ file-position drop du. cr
+  ." WORDS: " u. cr
+  ." LINES: " u. cr
+  r> close-file throw ;
+\ Usage:
+\
+\      file: example.txt
+\      | March on, join bravely, let us to it pell mell, if not
+\      | to heaven then hand in hand to hell!
+\      ;file
+\
+\ And to append to a file:
+\
+\      append: example.txt
+\      |
+\      | More Shakespeare!
+\      |
+\      ;append
+\
+: file: -handle token count w/o recreate-file throw handle ! ;
+: append: -handle token count w/o append-file throw handle ! ;
+: ;file handle @ close-file -handle throw ;
+: ;append ;file ;
+: | 
+  handle @ 0< if discard exit then
+  leftovers handle @ write-line ?dup if ;file then discard ;
+\ Create a hex file and allow for numeric input.
+\
+\ Usage:
+\
+\        hex: file.bin
+\        0 1 2 3 AA FF
+\        01 20
+\        .
+\
+: hex:
+  token count w/o recreate-file throw
+  base @ >r hex
+  cr
+  >r
+  begin
+    integer dpl @ 0< and
+  while
+    r@ emit-file drop
+  repeat drop
+  r> close-file r> base ! throw ;
 
 \ : defrag ; \ compact disk
 \ : chkdsk ;
-\ : wc ;
 
 \ Aliases
 : chdir cd ;
@@ -1889,6 +1932,7 @@ file: help.txt
 | df: display file system information
 | ed / edit <FILE>: edit a <FILE> with the block editor
 | exe / sh <FILE>: execute source <FILE>
+| export: export (or dump), from pwd, the file system
 | f2b <FILE1> <FILE2>: convert line/byte files to block files
 | fallocate <FILE> <NUM>: make <FILE> with <NUM> blocks
 | fdisk: **WARNING** formats disk deleting all data!
@@ -1915,6 +1959,7 @@ file: help.txt
 | stat <FILE>: display detailed information on <FILE>
 | touch / mkfile <FILE>: make a new file
 | tree: recursively print directories from the current one
+| wc <FILE>: display byte, word and line count of a file
 | 
 | Example commands:
 |
@@ -1927,7 +1972,28 @@ file: help.txt
 | rm HELLO.FTH
 | ls
 | 
+| To make new files the words `file:` and `hex:` can be used
+| to create text files and binary files respectively.
+|
+| Example usage of `file:`:
+|
+|        file: example.txt
+|        | This is an example line, line #1
+|        | This is an example line, line #2
+|        ;file
+|
+| This will create a file called `example.txt` with the two
+| line, without the `|` prefix.
+|
+| To create a binary file using `hex:`:
+|
+|        hex: example.bin
+|        0 1 2 3 AA FF
+|        3 4 5 6
+|        .
+| 
 | EDITOR COMMANDS
+|
 | This block editor is primitive but usable. It operates on
 | 1024 byte Forth blocks, with 16 lines per block. Some 
 | commands accept a line number or position.
@@ -2148,45 +2214,7 @@ defined eforth [if]
 : mkrandom ( "file" bytes -- )
 ;
 
-: export ; ( "dir" -- export file system )
-
-: wc
-  token count r/o open-file throw >r
-  bl
-  begin
-    r@ key-file dup 0>=
-  while ( lines words prev key )
-    dup $A  = if then
-    dup bl <= if over >= if then then
-  repeat 2drop
-  r> close-file throw ;
 [then]
-
-: export ( -- : export file system )
-  dsl
-  begin
-    dup d/blk <
-  while
-    peekd over dirent-type@ bl <= if 
-      ." cd .." cr drop exit 
-    then
-    peekd over special? if
-      peekd over ." mknod " dirent-blk@ u. cr
-    then
-    peekd over file? if
-      \ peekd over ." file: " dirent-name@ type cr
-      \ ." ;file" cr
-      peekd over ." hex: " dirent-name@ type
-      peekd over dirent-name@ (hexhump) cr
-      ." ." cr
-    then
-    peekd over dir? if
-      peekd over ." mkdir " dirent-name@ type cr
-      peekd over ." cd " dirent-name@ type cr
-      peekd over dirent-blk@ pushd recurse popd drop
-    then
-    1+
-  repeat drop ; 
 
 
 \ hex: xeRp.txt

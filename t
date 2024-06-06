@@ -7,13 +7,17 @@
 #
 # Unit tests for a Block Based Forth File System
 #
+# TODO: Run through shell check
+#
 
 set -eu
 
-# Unit Test Framework
+# Forth Unit Test Framework, this will be run under
+# the Forth system to test.
 UNIT=$(
 cat <<'EOF'
 marker [UNIT]
++ffs +dos
 : .fail cr source type cr ." [FAIL]" cr bye ;
 : .pass cr ." [PASS]" cr bye ;
 : +> token find 0= if .fail then catch 0= ?exit .fail ;
@@ -23,33 +27,37 @@ marker [UNIT]
 EOF
 )
 
-#FORTH=subleq
-FORTH=gforth
+FORTH="${1:-gforth}";
 
+case "${FORTH}" in
+	gforth) echo "GFORTH testing" ;;
+	subleq) echo "SUBLEQ eForth testing" ;;
+	*) echo "Invalid test option (either 'gforth' or 'subleq' are allowed): ${FORTH}"; 
+		exit 1; ;;
+esac
+
+# TODO: Make disk only once (e.g. save it from being cleaned)
 disk() {
-	if [ ! -f disk.dec ]; then
-		make disk;
-	fi;
+	if [ ! -f disk.dec ]; then make disk; fi;
 }
 
 reset () {
 	make clean;
+	if [ "${FORTH}" = "gforth" ]; then make ffs.fb; else disk; fi;
+}
+
+run () {
+	reset
 	if [ "${FORTH}" = "gforth" ]; then
-		make ffs.fb;
+		make run;
 	else
-		disk
+		./subleq disk.dec _.dec
 	fi;
 }
 
-# TODO: Select gforth or subleq
-run () {
-	reset
-	make run
-	#make disk
-}
 
-
-TFILE=$(tempfile)
+#TFILE=$(tempfile)
+TFILE=$(mktemp)
 trap 'rm -fv -- "${TFILE}"' EXIT
 PROG=$(
 cat <<'EOF'
@@ -84,10 +92,10 @@ unexists? test.fth
 EOF
 )
 
-echo "${UNIT}" "${PROG}" | run | tee ${TFILE}
-grep -v '^\[FAIL\]' ${TFILE} > /dev/null
-grep '^\[PASS\]' ${TFILE} > /dev/null
-rm ${TFILE}
+echo "${UNIT}" "${PROG}" | run | tee "${TFILE}"
+grep -v '^\[FAIL\]' "${TFILE}" > /dev/null
+grep '^\[PASS\]' "${TFILE}" > /dev/null
+rm "${TFILE}"
 exit
 
 run << EOF
