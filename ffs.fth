@@ -249,6 +249,7 @@
 \ TODO: Given a block find the file it belongs to and whether
 \ it is a head-block.
 \ TODO: execute/grep that is line oriented
+\ TODO: Checksum FAT, Checksum FS utilities 
 \
 
 defined (order) 0= [if]
@@ -655,7 +656,6 @@ cell 2 = little-endian and [if]
   \ N.B. If `block.end` then we are linkable in a way, we
   \ could handle that.
   over f@t blk.lastv u< swap and ; ( blk -- blk f )
-\ : linkable dup dirstart 1+ end 1+ within ; ( blk -- blk f )
 : link ( blk -- blk : load next block from FAT )
   linkable 0= if drop blk.end exit then f@t ; 
 : previous ( head-blk prior-to-blk -- blk )
@@ -1052,7 +1052,7 @@ variable line 0 line !
   vista ! head ! 0 line ! ( only ) [ {edlin} ] literal +order ; 
 {edlin} -order
 
-: .type ( blk line -- )
+: .type ( blk line -- : print directory entry type )
     2dup dir?     if ." DIR   " then
     2dup file?    if ." FILE  " then 
          special? if ." SPEC  " then ;
@@ -1209,7 +1209,7 @@ wordlist constant {required}
 : fam? dup stdio invert and 0<> throw ; ( fam -- fam )
 : ferror findex f.flags @ flg.error and 0<> ; ( handle -- f )
 : fail f.flags flg.error swap set ; ( findex -- )
-: nlast? f.blk @ link blk.end = ;
+: nlast? f.blk @ link blk.end = ; ( blk -- f )
 : limit? dup nlast? if f.end @ exit then drop b/buf ;
 : fremaining dup >r f.pos @ r> limit? swap - 0 max ;
 : nblock ( u findex -- f )
@@ -1231,6 +1231,7 @@ flg.ren constant r/o    ( -- fam : read only )
 flg.wen constant w/o    ( -- fam : write only )
 r/o w/o or constant r/w ( -- fam : read/write )
 
+\ TODO: Open directory FAM
 : bin fam? ; ( fam -- fam )
 : open-file ( c-addr u fam -- fileid ior ) 
   fam?
@@ -1556,26 +1557,49 @@ r/o w/o or constant r/w ( -- fam : read/write )
   repeat 2drop
   r> close-file rdrop r> base ! throw ;
 
+: blksum ( blk cksum -- cksum : calculate block checksum )
+  swap addr? b/buf 1- for
+    count swap >r ccitt r> 
+  next drop ;
+: blksums ( blk u -- cksum : calculate checksum over blocks )
+  $FFFF >r
+  begin
+    ?dup
+  while
+    over r> blksum >r
+    +string
+  repeat drop r> ;
+
 {dos} +order definitions
 
+\ TODO: Checksum over file/directory
+: fscksum ( -- : calculate checksums over file system )
+  cr
+  ." FAT CKSUM: " fat fats blksums u. cr
+  ." FS  CKSUM: " fat end fat - blksums u. cr 
+;
+
+
 : df cr ( -- : list disk usage and file system info )
-   loaded @ 0= if ." NO DISK" cr exit then
-   ." MOUNTED" cr
-   ." VERSION:     " version .hex cr
-   ." BLK SZ:      " b/buf u. cr
-   ." START BLK:   " start u. cr
-   ." END BLK:     " end u. cr
-   ." MAX DIRS:    " maxdir u. cr
-   ." MAX:         " end start - dup . ."  /" b/buf * u. cr
-   ." FREE:        " blk.free btally dup . ."  /" b/buf * u. cr 
-   ." BAD BLKS:    " blk.bad-blk btally u. cr 
-   ." LARGEST CONTIGUOUS BLOCK: " largest u. cr 
-   ." READ ONLY:    " read-only @ yes? type cr
-   ." INSENSITIVE:  " insensitive @ yes? type cr ;
+  loaded @ 0= if ." NO DISK" cr exit then
+  ." MOUNTED" cr
+  ." VERSION:     " version .hex cr
+  ." BLK SZ:      " b/buf u. cr
+  ." START BLK:   " start u. cr
+  ." END BLK:     " end u. cr
+  ." MAX DIRS:    " maxdir u. cr
+  ." MAX:         " end start - dup . ."  /" b/buf * u. cr
+  ." FREE:        " blk.free btally dup . ."  /" b/buf * u. cr 
+  ." BAD BLKS:    " blk.bad-blk btally u. cr 
+  ." LARGEST CONTIGUOUS BLOCK: " largest u. cr 
+  ." READ ONLY:    " read-only @ yes? type cr
+  ." INSENSITIVE:  " insensitive @ yes? type cr 
+  ." FAT CKSUM:   " fat fats blksums u. cr
+  ." FS  CKSUM:   " fat end fat - blksums u. cr ;
 
 : cksum ( "file" -- calculate checksum over file )
   token count r/o open-file throw
-  dup (cksum) u.
+  dup (cksum) cr u. cr
   close-file throw ;
 : fsync save-buffers ; ( -- : save file system data )
 : ls peekd .dir ; ( -- : list contents of Present Working Dir )
@@ -1629,6 +1653,10 @@ r/o w/o or constant r/w ( -- fam : read/write )
   >r addr? r@
   dirsz * + dup dirsz + swap b/buf r@ 1+ dirsz * 
   - cmove rdrop save ;
+\ N.B. We could set a per directory checksum, a checksum over
+\ the directory would be relatively cheap to calculate,
+\ assuming file creation and deletion is not too common
+\ relative to other file operations.
 : mkdir ( "dir" -- : make a directory )
   ro?
   dirp @ maxdir >= EDDPT error
@@ -2228,32 +2256,34 @@ defined eforth [if]
 \ The constants used have been collected from various places
 \ on the web and are specific to the size of a cell.
 \ 
-cell 2 = ?\ 13 constant a 9  constant b 7  constant c
-cell 4 = ?\ 13 constant a 17 constant b 5  constant c
-cell 8 = ?\ 12 constant a 25 constant b 27 constant c
+cell 2 = ?\ 13 constant #a 9  constant #b 7  constant #c
+cell 4 = ?\ 13 constant #a 17 constant #b 5  constant #c
+cell 8 = ?\ 12 constant #a 25 constant #b 27 constant #c
 
-7 variable seed ( must not be zero )
+variable seed 7 seed ! ( must not be zero )
 
 : seed! ( x -- : set the value of the PRNG seed )
   dup 0= if drop 7 ( zero not allowed ) then seed ! ;
 
 : random ( -- x : random number )
   seed @
-  dup a lshift xor
-  dup b rshift xor
-  dup c lshift xor
+  dup #a lshift xor
+  dup #b rshift xor
+  dup #c lshift xor
   dup seed! ;
 
 \ hide{ a b c seed }hide
+
 : mkrandom ( "file" bytes -- )
-  ro? narg integer? >r
-;
-\ TODO: seed by cksum of file system for entropy?
+  ro? narg integer? >r namebuf w/o open-file throw r>
+  begin
+    ?dup
+  while
+    random r@ emit-file drop
+    1-
+  repeat r> close-file throw ;
 
 ( =================== Random Numbers ======================== )
 [then]
-
-
-
 
 
