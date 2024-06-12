@@ -249,7 +249,6 @@
 \ TODO: Given a block find the file it belongs to and whether
 \ it is a head-block.
 \ TODO: execute/grep that is line oriented
-\ TODO: Checksum FAT, Checksum FS utilities 
 \
 
 defined (order) 0= [if]
@@ -329,17 +328,20 @@ defined /string 0= [if]
   over min rot over + -rot - ;
 [then]
 
-: ?\ ?exit postpone \ ;
+: ?\ ?exit postpone \ ; ( f "line"? -- )
 \ : ?( ?exit postpone ( ;
 
+\ If needed, `toggle` is:
+\
+\      : toggle tuck @ xor swap ! ; ( u a -- )
+\
 : set tuck @ or swap ! ; ( u a -- )
 : clear tuck @ swap invert and swap ! ; ( u a -- )
-\ : toggle tuck @ xor swap ! ; ( u a -- )
 
 : lower? 97 123 within ; ( ch -- f )
 : upper? 65 91 within ; ( ch -- f )
 : >lower dup upper? 32 and xor ; ( ch -- ch )
-: >upper dup lower? 32 and xor ;
+: >upper dup lower? 32 and xor ; ( ch -- ch )
 
 : icompare ( a1 u1 a2 u2 -- n : string comparison )
   rot
@@ -399,6 +401,33 @@ defined search 0= [if]
     over c@ 3 pick = if over 4 pick swap c! then
     +string
   repeat drop 2drop ;
+
+\ This section implements a Pseudo Random Number generator, it
+\ uses the xor-shift algorithm to do so.
+\ See:
+\ * <https://en.wikipedia.org/wiki/Xorshift>
+\ * <http://excamera.com/sphinx/article-xorshift.html>
+\ * <http://xoroshiro.di.unimi.it/>
+\ 
+\ The constants used have been collected from various places
+\ on the web and are specific to the size of a cell.
+\ 
+defined random 0= [if]
+cell 2 = ?\ 13 constant #a 9  constant #b 7  constant #c
+cell 4 = ?\ 13 constant #a 17 constant #b 5  constant #c
+cell 8 = ?\ 12 constant #a 25 constant #b 27 constant #c
+
+variable seed 7 seed ! ( must not be zero )
+
+: seed! ( x -- : set the value of the PRNG seed )
+  dup 0= if drop 7 ( zero not allowed ) then seed ! ;
+
+: random ( -- x : random number )
+  seed @
+  dup #a lshift xor
+  dup #b rshift xor
+  dup #c lshift xor
+  dup seed! ;
 
 defined b/buf 0= [if] 1024 constant b/buf [then]
 defined d>s 0= [if] : d>s drop ; [then]
@@ -1015,8 +1044,25 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
     blk.end =
   until <> throw ;
 
-\ TODO: Delete block command
-\ TODO: Line oriented editing?
+\ This implements a block editor that operates on discontinuous 
+\ blocks. SUBLEQ eForth contains a block editor that operates
+\ on continuous blocks if one is needed, as it allows the
+\ blocks to be directly addressed which is hidden from the
+\ user with this editor.
+\
+\ There is a help section later on in this file for this 
+\ editor. New blocks will be automatically allocated as needed.
+\
+\ A line oriented editor could be made as we have the file
+\ access words to do so now.
+\
+\ All the editor commands are contained within their own
+\ `{edlin}` vocabulary.
+\
+\ A command to delete the current working block would be 
+\ useful, instead of the `r` command which is a poor facsimile.
+\
+\ TODO: File locking?
 wordlist constant {edlin}
 {edlin} +order definitions
 variable vista 1 vista ! \ Used to be `scr`
@@ -1045,8 +1091,9 @@ variable line 0 line !
 : z vista @ addr? b/buf blank ; ( -- : erase current block )
 : d 1 ?depth >r vista @ addr? r> [ $6 ] literal lshift +
    [ $40 ] literal blank ; ( line -- : delete line )
-: - line @ -1 line +! line @ 0< if 0 line ! p then ;
+: - line @ -1 line +! line @ 0< if l/blk 1- line ! p then ;
 : + line @ a 1 line +! line @ l/blk >= if 0 line ! n then ;
+: r head @ bcount 1- head @ btruncate head @ vista ! ;
 {ffs} +order definitions
 : edlin ( BLOCK editor )
   vista ! head ! 0 line ! ( only ) [ {edlin} ] literal +order ; 
@@ -1134,7 +1181,6 @@ variable line 0 line !
 \        DIR-LINE: 16/cell
 \        DIR-BLK:  16/cell
 \
-\ TODO: Open memory as a file.
 \
 \ Some useful debug words for printing out file system
 \ information:
@@ -1161,6 +1207,7 @@ variable line 0 line !
 \          dup f.dblk  @ ." DBK: " u. cr
 \          drop ;
 \
+\ TODO: Open memory as a file. Redirect stdin/stdout/stderr.
  
 \ `entry` and `required?` are used by `included`, `include`,
 \ `require` and `required` in order to prevent loading the
@@ -1231,7 +1278,6 @@ flg.ren constant r/o    ( -- fam : read only )
 flg.wen constant w/o    ( -- fam : write only )
 r/o w/o or constant r/w ( -- fam : read/write )
 
-\ TODO: Open directory FAM
 : bin fam? ; ( fam -- fam )
 : open-file ( c-addr u fam -- fileid ior ) 
   fam?
@@ -1569,16 +1615,20 @@ r/o w/o or constant r/w ( -- fam : read/write )
     over r> blksum >r
     +string
   repeat drop r> ;
+: dirsum ( $FFFF dirstart -- u : checksum over directories )
+  >r r@ swap blksum
+  dsl
+  begin
+    dup d/blk <
+  while
+    r@ over dirent-type@ bl <= if drop rdrop exit then
+    r@ over dir? if
+      r@ over dirent-blk@ >r swap r> recurse swap
+    then
+    1+
+  repeat drop rdrop ; 
 
 {dos} +order definitions
-
-\ TODO: Checksum over file/directory
-: fscksum ( -- : calculate checksums over file system )
-  cr
-  ." FAT CKSUM: " fat fats blksums u. cr
-  ." FS  CKSUM: " fat end fat - blksums u. cr 
-;
-
 
 : df cr ( -- : list disk usage and file system info )
   loaded @ 0= if ." NO DISK" cr exit then
@@ -1595,8 +1645,8 @@ r/o w/o or constant r/w ( -- fam : read/write )
   ." READ ONLY:    " read-only @ yes? type cr
   ." INSENSITIVE:  " insensitive @ yes? type cr 
   ." FAT CKSUM:   " fat fats blksums u. cr
-  ." FS  CKSUM:   " fat end fat - blksums u. cr ;
-
+  ." FS  CKSUM:   " fat end fat - blksums u. cr 
+  ." DIR CKSUM:   " $FFFF dirstart dirsum u. cr ;
 : cksum ( "file" -- calculate checksum over file )
   token count r/o open-file throw
   dup (cksum) cr u. cr
@@ -1845,6 +1895,24 @@ r/o w/o or constant r/w ( -- fam : read/write )
   ." WORDS: " u. cr
   ." LINES: " u. cr
   r> close-file throw ;
+: yes ( "file" "string" count -- )
+  ro? narg token count mcopy integer?
+  namebuf w/o create-file throw >r
+  begin
+    ?dup
+  while
+    movebuf r@ write-line drop
+    1-
+  repeat
+  r> close-file throw ;
+: mkrandom ( "file" bytes -- )
+  ro? narg integer? >r namebuf w/o create-file throw r> swap >r
+  begin
+    ?dup
+  while
+    random r@ emit-file drop
+    1-
+  repeat r> close-file throw ;
 \ Usage:
 \
 \      file: example.txt
@@ -1910,6 +1978,8 @@ mount loaded @ 0= [if]
 cr .( FFS NOT PRESENT, FORMATTING... ) cr
 fdisk
 \ Nested brackets ifs do not work in SUBLEQ eFORTH...)
+\ TODO: Put all these files in a `/system` directory when
+\ `resolve` works correctly.
 defined eforth 0= ?\ mknod [BOOT] 0
 defined eforth 0= ?\ mknod [FAT] 1
 defined eforth    ?\ mknod [BOOT] 65
@@ -1974,6 +2044,7 @@ file: help.txt
 | melt: Unfreeze file system - Turn off read only mode
 | mkdir <DIR>: make a directory
 | mknod <FILE> <NUM>: make a special <FILE> with <NUM>
+| mkrandom <FILE> <BYTES>: file <FILE> with random <BYTES>
 | mkuser <USER> <PASSWORD>: create new user entry (SUBLEQ only)
 | more <FILE>: display a file, pause for every X lines
 | mount: attempt file system mounting
@@ -1986,6 +2057,7 @@ file: help.txt
 | touch / mkfile <FILE>: make a new file
 | tree: recursively print directories from the current one
 | wc <FILE>: display byte, word and line count of a file
+| yes <FILE> <STR> <NUM>: fill <FILE> with <NUM> lines of <STR>
 | 
 | Example commands:
 |
@@ -2039,6 +2111,7 @@ file: help.txt
 | z : blank current block
 | y : yank block to storage buffer
 | u : replace screen with storage buffer
+| r : remove last block in chain, set working block to first
 |
 | Note that it is possible to delete a file whilst editing it,
 | which is not advised but should not break anything.
@@ -2230,60 +2303,6 @@ only forth definitions +dos +ffs +system
 defined eforth [if]
 : reboot login quit ;
 ' reboot <quit> !
-[then]
-
-
-: mkfill ( "file" "string" count -- )
-  ro? narg token count mcopy integer?
-  namebuf w/o create-file throw >r
-  begin
-    ?dup
-  while
-    movebuf r@ write-line drop
-    1-
-  repeat
-  r> close-file throw ;
-
-0 [if]
-( =================== Pseudo Random Numbers ================= )
-\ This section implements a Pseudo Random Number generator, it
-\ uses the xor-shift algorithm to do so.
-\ See:
-\ https://en.wikipedia.org/wiki/Xorshift
-\ http://excamera.com/sphinx/article-xorshift.html
-\ http://xoroshiro.di.unimi.it/
-\ 
-\ The constants used have been collected from various places
-\ on the web and are specific to the size of a cell.
-\ 
-cell 2 = ?\ 13 constant #a 9  constant #b 7  constant #c
-cell 4 = ?\ 13 constant #a 17 constant #b 5  constant #c
-cell 8 = ?\ 12 constant #a 25 constant #b 27 constant #c
-
-variable seed 7 seed ! ( must not be zero )
-
-: seed! ( x -- : set the value of the PRNG seed )
-  dup 0= if drop 7 ( zero not allowed ) then seed ! ;
-
-: random ( -- x : random number )
-  seed @
-  dup #a lshift xor
-  dup #b rshift xor
-  dup #c lshift xor
-  dup seed! ;
-
-\ hide{ a b c seed }hide
-
-: mkrandom ( "file" bytes -- )
-  ro? narg integer? >r namebuf w/o open-file throw r>
-  begin
-    ?dup
-  while
-    random r@ emit-file drop
-    1-
-  repeat r> close-file throw ;
-
-( =================== Random Numbers ======================== )
 [then]
 
 
