@@ -245,10 +245,10 @@
 \ file system limitations and partly due to a lack of need.
 \
 \ TODO: Simple regex/glob engine
+\ TODO: Execute/grep that is line oriented
 \ TODO: Check disk routine, undelete?
 \ TODO: Given a block find the file it belongs to and whether
 \ it is a head-block.
-\ TODO: execute/grep that is line oriented
 \
 
 defined (order) 0= [if]
@@ -559,6 +559,8 @@ variable fatal 0 fatal ! \ Has a fatal error occurred?
 variable handle -1 handle ! \ Used with `file:`
 create linebuf c/blk allot  \ Used as temporary line buffer
 
+\ The following variables are used for the file access routines
+\ which build upon the file system.
 8 constant fopen-max
 7 cells constant fhandle-size
 create fhandles fhandle-size fopen-max * dup cells allot 
@@ -566,14 +568,22 @@ create fhandles fhandle-size fopen-max * dup cells allot
 create reqbuf maxname 1+ allot \ File name as a counted string
 create newline 2 c, $D c, $A c, align
 
-  1 constant flg.used
-  2 constant flg.ren
-  4 constant flg.wen
-  8 constant flg.stdin
- 16 constant flg.stdout
- 32 constant flg.error
- 64 constant flg.eof
-128 constant flg.mem \ Reserved for memory mapped files
+\ These are set later, they store the file handles that back
+\ `stdin`, `stdout` and `stderr`, you can redirect them by
+\ opening up a new file and storing the handle in one of these.
+variable <stdin>   ( File handle for STDIN )
+variable <stdout>  ( File handle for STDOUT ) 
+variable <stderr>  ( File handle for STDERR )
+
+\ These flags are used for the file handle flag field.
+  1 constant flg.used   \ Is the file handle in use
+  2 constant flg.ren    \ Read Enable
+  4 constant flg.wen    \ Write Enable
+  8 constant flg.stdin  \ Read from Stdin
+ 16 constant flg.stdout \ Write to Stdout
+ 32 constant flg.error  \ Error flag
+ 64 constant flg.eof    \ End Of File
+128 constant flg.mem    \ Reserved for memory mapped files
 
 \ Offsets into the file handle structure.
 \
@@ -623,6 +633,8 @@ defined eforth [if] : numberify number? ; [else]
 : fvalid? dup 0 fopen-max 1+ within 0= throw ; 
 : findex fvalid? fhandles swap fhandle-size * + ;
 : fundex fhandles - fhandle-size / ;
+\ TODO: Lock files by making their type upper/lower case,
+\ add an unlock command to unlock a file.
 : locked? ( dir -- f )
   >r 0
   begin
@@ -1044,6 +1056,8 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
     blk.end =
   until <> throw ;
 
+\ ### Block Editor
+\
 \ This implements a block editor that operates on discontinuous 
 \ blocks. SUBLEQ eForth contains a block editor that operates
 \ on continuous blocks if one is needed, as it allows the
@@ -1098,6 +1112,8 @@ variable line 0 line !
 : edlin ( BLOCK editor )
   vista ! head ! 0 line ! ( only ) [ {edlin} ] literal +order ; 
 {edlin} -order
+
+\ ### Command Helper Words
 
 : .type ( blk line -- : print directory entry type )
     2dup dir?     if ." DIR   " then
@@ -1171,6 +1187,8 @@ variable line 0 line !
 
 : yes? if s" yes" exit then s" no" ; ( f -- c-addr u )
 
+\ ## File Access Methods
+\
 \ File Handle Structure:
 \
 \        FLAGS:    16/cell
@@ -1207,8 +1225,9 @@ variable line 0 line !
 \          dup f.dblk  @ ." DBK: " u. cr
 \          drop ;
 \
-\ TODO: Open memory as a file. Redirect stdin/stdout/stderr.
- 
+
+\ ### Include/Require
+\
 \ `entry` and `required?` are used by `included`, `include`,
 \ `require` and `required` in order to prevent loading the
 \ same file twice when using `require` or `required`. They do
@@ -1233,6 +1252,10 @@ wordlist constant {required}
   >r get-order {required} +order definitions r> entry >r
   set-order definitions r> ;
 
+\ ### File Helper Words
+\
+\ Missing is a way of opening memory up as 
+\
 : unused? ( -- ptr f : find a free handle if one exists )
   0
   begin
@@ -1354,6 +1377,9 @@ r/o w/o or constant r/w ( -- fam : read/write )
   mcopy ncopy
   namebuf peekd dir-find dup >r 0< if rdrop EFILE exit then
   movebuf peekd dir-find 0>= if rdrop EEXIS exit then
+  peekd r@ dir? if
+    findbuf peekd r@ dirent-blk@ 0 dirent-name!
+  then
   findbuf peekd r> dirent-name! 0 ;
 : delete-file ( c-addr u -- ior )
   ncopy 0 [ ' (rm) ] literal catch dup if nip then ; 
@@ -1493,13 +1519,11 @@ r/o w/o or constant r/w ( -- fam : read/write )
     bbuf/ 1+ ( b/buf um/mod 1+ )
     ?dup if r@ f.blk @ btruncate then 
     r@ f.end !
-
     \ After `resize-file` `file-position` is unspecified, we
     \ could improve this but the current behavior is allowed
     \ by the standard.
     r@ f.head @ r@ f.blk !
     0 r@ f.pos !
-
     r> fundex flush-file
     exit
   then \ Grow
@@ -1534,7 +1558,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
 
 : remaining source nip >in @ - ; ( -- n )
 : leftovers source nip remaining - >r source r> /string ;
-: -handle -1 handle ! ;
+: -handle -1 handle ! ; ( -- )
 : discard source nip >in ! ; ( -- )
 
 : (cksum) ( file-id -- cksum )
@@ -1659,12 +1683,6 @@ r/o w/o or constant r/w ( -- fam : read/write )
 : freeze 1 read-only ! ; ( -- : make file system read only )
 : melt 0 read-only ! ; ( -- : allowing writing to file system )
 : fdisk melt bcheck fmt.init fmt.fat fmt.blks fmt.root mount ;
-\ TODO: Fix this, this also applies to `rename` and `move`,
-\ need to call `dirent`.
-\ not erase all the sub-entries.
-\ BUG: Renaming directory does not change directory name
-\ within directory block, only within containing directory
-\ entry
 : rename ( "file" "file" -- : rename a file )
   ( `locked!?` does not need to be called )
   ro?
@@ -1672,6 +1690,9 @@ r/o w/o or constant r/w ( -- fam : read/write )
   namebuf peekd dir-find dup >r 0< EFILE error
   narg ( dir-find uses `findbuf` )
   namebuf peekd dir-find 0>= EEXIS error
+  peekd r@ dir? if
+    findbuf peekd r@ dirent-blk@ 0 dirent-name!
+  then
   findbuf peekd r> dirent-name! ;
 : mv ( "file" "file" -- : move a file to different dirs )
   ro?
@@ -1692,7 +1713,11 @@ r/o w/o or constant r/w ( -- fam : read/write )
     else \ rename
       rdrop
       drop movebuf peekd dir-find 
-      >r namebuf peekd r> dirent-name! exit
+      >r 
+      peekd r@ dir? if
+        namebuf peekd r@ dirent-blk@ 0 dirent-name!
+      then
+      namebuf peekd r> dirent-name! exit
     then
   then
   r@ dfull?
@@ -2239,10 +2264,14 @@ defined eforth 0= [if]
 \ be redirected.
 \
 s" ." r/w open-file throw ( open special file '.' )
-dup constant stdin
-dup constant stdout
-dup constant stderr
+dup <stdin> !
+dup <stdout> !
+dup <stderr> !
 drop
+
+: stdin <stdin> @ ; ( -- file )
+: stdout <stdout> @ ; ( -- file )
+: stderr <stderr> @ ; ( -- file )
 
 defined eforth [if]
 \ A primitive user login system [that is super insecure].
