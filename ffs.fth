@@ -245,7 +245,6 @@
 \ file system limitations and partly due to a lack of need.
 \
 \ TODO: Simple regex/glob engine
-\ TODO: Execute/grep that is line oriented
 \ TODO: Check disk routine, undelete?
 \ TODO: Given a block find the file it belongs to and whether
 \ it is a head-block.
@@ -553,7 +552,6 @@ b/buf l/blk / constant c/blk   \ Columns per block
 b/buf dirsz / constant d/blk   \ Directories per block
 variable loaded 0 loaded !     \ Loaded initial program?
 variable eline 0 eline !       \ Empty link in directory
-variable grepl 0 grepl !       \ used to store grep length
 variable insensitive 0 insensitive ! \ Case insensitivity
 variable fatal 0 fatal ! \ Has a fatal error occurred?
 variable handle -1 handle ! \ Used with `file:`
@@ -816,7 +814,7 @@ cell 2 = little-endian and [if]
 : (grep) ( N.B - mcopy must hold search term )
   addr?
   l/blk 1- for
-    dup c/blk movebuf drop grepl @ examine nip nip if
+    dup c/blk movebuf -trailing examine nip nip if
       dup c/blk type cr
     then
     c/blk +
@@ -1553,6 +1551,10 @@ r/o w/o or constant r/w ( -- fam : read/write )
   open-file ?dup ?exit >r
   r@ end-file ?dup if r> close-file drop exit then
   r> 0 ;
+: line-end? ( u flag ior -- u f : read-line at EOF? )
+  ?dup if nip exit then
+  0= swap tuck 0= and ;
+
 
 {ffs} +order definitions
 
@@ -1669,8 +1671,8 @@ r/o w/o or constant r/w ( -- fam : read/write )
   ." READ ONLY:    " read-only @ yes? type cr
   ." INSENSITIVE:  " insensitive @ yes? type cr 
   ." FAT CKSUM:   " fat fats blksums u. cr
-  ." FS  CKSUM:   " fat end fat - blksums u. cr 
-  ." DIR CKSUM:   " $FFFF dirstart dirsum u. cr ;
+  ." DIR CKSUM:   " $FFFF dirstart dirsum u. cr
+  ." FS  CKSUM:   " fat end fat - blksums u. cr ;
 : cksum ( "file" -- calculate checksum over file )
   token count r/o open-file throw
   dup (cksum) cr u. cr
@@ -1788,11 +1790,39 @@ r/o w/o or constant r/w ( -- fam : read/write )
   #rem found? dirent-rem!
   r> found? dirent-blk! 
   [char] S found? dirent-type! ;
-\ TODO: normal grep
 : bgrep ( search file -- : search a file for a string )
-  token count dup grepl ! mcopy
+  cr
+  token count mcopy
   narg namebuf peekd dir-find dup 0< EFILE error
   peekd swap dirent-blk@ [ ' (grep) ] literal apply ; 
+: grep ( "search" "file" -- )
+  token count mcopy
+  narg namebuf r/o open-file throw >r
+  begin
+    copy-store b/buf r@ read-line line-end? 0=
+  while
+    >r
+    copy-store r@ movebuf -trailing examine nip nip if 
+      copy-store r@ type cr
+    then
+    rdrop
+  repeat
+  drop
+  r> close-file throw ;
+\ N.B. Very slow in SUBLEQ eForth because of poor performance
+\ of `read-line`. This should be improved. It is especially a
+\ problem when executing files formatted as Forth blocks, as
+\ `read-line` searches the entire buffer for an End Of Line
+\ marker.
+: script ( "file" -- )
+  narg namebuf r/o open-file throw >r
+  begin
+    copy-store b/buf r@ read-line line-end? 0=
+  while
+    copy-store swap [ ' evaluate ] literal catch ?dup
+    if r> close-file throw throw then
+  repeat
+  drop r> close-file throw ;
 : rm ro? narg 0 (rm) ; ( "file" -- )
 : rmdir ro? narg 1 (rm) ; ( "dir" -- )
 : cd ( "dir" -- : change the Present Working Directory )
@@ -1990,9 +2020,9 @@ r/o w/o or constant r/w ( -- fam : read/write )
 : cp copy ; ( "file" "file" -- copy file )
 : del rm ; ( "file" -- delete file )
 : ed edit ; ( "file" -- edit file )
-: sh exe ; ( "file" -- execute file )
 : touch mkfile ; ( "file" -- : create a file )
 : diff cmp ; ( "file" "file" -- : compare two files )
+\ : sh script ; ( "file" -- execute file ) \ Clashes in Gforth
 ( : bye halt ; ) \ Clashes with FORTHs `bye`word.
 ( : exit halt ; ) \ Clashes with FORTHs `exit` word.
 ( : quit halt ; ) \ Clashes with FORTHs `quit` word.
@@ -2012,7 +2042,7 @@ defined eforth    ?\ mknod [FAT] 66
 defined eforth    ?\ mknod [KERNEL] 1
 mkdir home
 mkdir bin
-edit demo.fth
+edit demo.blk
 + .( HELLO, WORLD ) cr
 + 2 2 + . cr
 q
@@ -2052,7 +2082,7 @@ file: help.txt
 | deltree <FILE/DIR>: delete a file, or directory recurisvely
 | df: display file system information
 | ed / edit <FILE>: edit a <FILE> with the block editor
-| exe / sh <FILE>: execute source <FILE>
+| exe <FILE>: execute source <FILE> of blocks
 | export: export (or dump), from pwd, the file system
 | f2b <FILE1> <FILE2>: convert line/byte files to block files
 | fallocate <FILE> <NUM>: make <FILE> with <NUM> blocks
@@ -2061,6 +2091,7 @@ file: help.txt
 | freeze: Freeze file system - Turn on read only mode
 | fsync: save any block changes
 | ftruncate <FILE> <NUM>: truncate <FILE> to <NUM> blocks
+| grep <STRING> <FILE>: Search for <STRING> in lines of <FILE>
 | help: display a short help
 | hexdump <FILE>: hexdump a file consisting of blocks
 | login: password login (NOP if no users) (SUBLEQ eForth only)
@@ -2077,12 +2108,20 @@ file: help.txt
 | rename <DIR/FILE1> <DIR/FILE2>: rename a file or directory
 | rm / del <FILE>: remove a <FILE> and not a <DIR>
 | rmdir <DIR>: remove an empty directory
+| sh / script <FILE>: execute line based <FILE>
 | sh / shell: invoke file system shell
 | stat <FILE>: display detailed information on <FILE>
 | touch / mkfile <FILE>: make a new file
 | tree: recursively print directories from the current one
 | wc <FILE>: display byte, word and line count of a file
 | yes <FILE> <STR> <NUM>: fill <FILE> with <NUM> lines of <STR>
+| 
+| `grep` is limited to 16 byte search terms and 1024 byte 
+| lines, it also uses the same copy buffer that the editor
+| uses for the copy command.
+| 
+| Executing files requires that they are block formatted and
+| not line formatted. 
 | 
 | Example commands:
 |
@@ -2160,7 +2199,7 @@ file: help.txt
 | file, a new block is assigned if "n" is at the end of the
 | file.
 ;file
-file: errors.txt
+file: errors.db
 | -1  ABORT
 | -2  ABORT"
 | -3  stack overflow
@@ -2325,7 +2364,7 @@ only forth definitions +dos +ffs +system
   = until drop rdrop linebuf c/blk 4 /string -trailing -1 ;
 
 : toerror ( n -- c-addr u )
-  s" errors.txt" r/o open-file throw
+  s" errors.db" r/o open-file throw
   dup >r (toerror) r> close-file throw 
   ?exit 2drop s" unknown" ;
 
