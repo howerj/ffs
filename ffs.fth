@@ -248,6 +248,9 @@
 \ TODO: Check disk routine, undelete?
 \ TODO: Given a block find the file it belongs to and whether
 \ it is a head-block.
+\ TODO: Arbitrary execution token for File Access Method
+\ handling, implement opening up memory as a file...This 
+\ requires handles for read/write/file-pos-{get,set}/open/close
 \
 
 defined (order) 0= [if]
