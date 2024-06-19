@@ -3,3 +3,5 @@
 *.fb
 subleq
 muxleq
+*.lzss
+*.orig

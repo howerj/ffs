@@ -1266,6 +1266,14 @@ wordlist constant {required}
    1+
   repeat
   drop -1 0 ;
+: handles? ( -- u : count of free handles )
+  0 >r 0
+  begin
+   dup fopen-max <
+  while
+    dup findex f.flags @ 0= if r> 1+ >r then
+    1+
+  repeat drop r> ;
 : take ( -- ptr f : take a free handle if one exists )
   unused? 0= if 0 exit then
   dup ferase
@@ -1670,6 +1678,8 @@ r/o w/o or constant r/w ( -- fam : read/write )
   ." MAX:         " end start - dup . ."  /" b/buf * u. cr
   ." FREE:        " blk.free btally dup . ."  /" b/buf * u. cr 
   ." BAD BLKS:    " blk.bad-blk btally u. cr 
+  ." FILES OPEN:  " fopen-max handles? - u. cr
+  ." MAX HANDLES: " fopen-max u. cr
   ." LARGEST CONTIGUOUS BLOCK: " largest u. cr 
   ." READ ONLY:    " read-only @ yes? type cr
   ." INSENSITIVE:  " insensitive @ yes? type cr 
@@ -1892,7 +1902,6 @@ r/o w/o or constant r/w ( -- fam : read/write )
 : bcat (file) [ ' +list ] literal apply ; ( "file" -- )
 : bmore (file) link-more ; ( "file" -- )
 : exe (file) link-load  ; ( "file" -- )
-
 : hexdump ( "file" -- : nicely formatted hexdump of file )
   token count -1 (hexhump) ;
 : stat ( "file" -- : detailed file stats )
@@ -2375,5 +2384,4 @@ defined eforth [if]
 : reboot login quit ;
 ' reboot <quit> !
 [then]
-
 
