@@ -2385,3 +2385,135 @@ defined eforth [if]
 ' reboot <quit> !
 [then]
 
+\ TODO: This code is buggy under FFS
+
+wordlist constant {lzp} {lzp} +order definitions
+
+\ defined eforth [if] 8 [else] 16 [then] constant model-bits
+8 constant model-bits
+1 model-bits lshift constant model-size
+create model model-size allot align
+create buf 9 allot align
+variable bufp
+variable fin
+variable infile
+variable outfile
+variable ocnt
+variable icnt
+variable prediction
+variable mask
+variable run
+
+defined +hash 0= [if] ( default hash model )
+: +hash  ( h c -- h )
+  swap 4 lshift xor [ model-size 1- ] literal and ; 
+[then]
+
+: get ( file -- c|-1 )
+  infile @ key-file dup 0< if fin ! exit then 
+  infile @ file-eof? if drop -1 fin ! -1 exit then
+  1 icnt +! ;
+
+: put outfile @ emit-file throw 1 ocnt +! ; ( c -- )
+: predict prediction @ swap +hash prediction ! ; ( c -- )
+: reset
+  0 prediction !
+  0 fin ! 
+  0 icnt ! 0 ocnt !
+  buf 9 erase
+  model model-size erase ;
+: model? prediction @ model + c@ ; ( -- c )
+: model! prediction @ model + c! ; ( c -- )
+: breset 1 bufp ! 0 buf c! 0 run ! ;
+: wbuf 
+  run @ if
+    buf bufp @ 1- for
+      count put
+    next drop
+  then breset ;
+: lzp-encode ( -- ior )
+  reset
+  begin
+    breset
+    0 begin
+      dup 8 < fin @ 0= and
+    while
+      get >r r@ 0< if wbuf rdrop drop 0 exit then
+      -1 run !
+      r@ model? = if
+        dup 1 swap lshift buf c@ or buf c!
+      else
+        r@ model! 
+        r@ buf bufp @ + c! 
+        1 bufp +!
+      then 
+      r> predict
+      1+
+    repeat drop
+    wbuf
+  fin @ until wbuf 0 ;
+: lzp-decode ( -- ior )
+  reset
+  begin
+    get dup 0< if drop 0 exit then
+    0 begin
+      dup 8 <
+    while
+      2dup 1 swap lshift and if
+        model?
+      else
+        get dup 0< if drop 2drop 0 exit then
+        dup model!
+      then
+      dup put predict
+      1+
+    repeat 2drop
+  fin @ until 0 ;
+
+: lzp-statistics ( -- )
+  ." in : " icnt @ . cr
+  ." out: " ocnt @ . cr
+  icnt @ if
+    ." saved: " icnt @ ocnt @ - 100 icnt @ * / \ TODO: */
+    . ." %" cr
+  then ;
+
+: lzp-file outfile ! infile ! lzp-encode ;
+: unlzp-file outfile ! infile ! lzp-decode ;
+  
+: lzp-file-name ( "from" "to" -- ior )
+  w/o recreate-file ?dup if nip exit then outfile !
+  r/o open-file ?dup if nip outfile @ close-file drop exit then
+  infile !
+  [ ' lzp-encode ] literal catch
+  infile @ close-file 0 infile !
+  outfile @ close-file 0 outfile !
+  ?dup if nip nip exit then
+  ?dup if nip exit then ;
+
+: unlzp-file-name ( "from" "to" -- ior )
+  w/o recreate-file ?dup if nip exit then outfile !
+  r/o open-file ?dup if nip infile @ close-file drop exit then
+  infile !
+  [ ' lzp-decode ] literal catch
+  infile @ close-file 0 infile !
+  outfile @ close-file 0 outfile !
+  ?dup if nip nip exit then
+  ?dup if nip exit then ;
+
++dos definitions
+
+: lzp ( "from" "to" -- )
+  peekd locked!? ro? 
+  narg namebuf mcopy narg movebuf namebuf lzp-file-name 
+  lzp-statistics ;
+: unlzp ( "from" "to" -- ) 
+  peekd locked!? ro? 
+  narg namebuf mcopy narg movebuf namebuf unlzp-file-name
+  lzp-statistics ;
+
+{lzp} -order
+
+\ lzp help.txt help.lzp
+\ unlzp help.lzp help.orig
+
