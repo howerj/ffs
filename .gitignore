@@ -1,7 +1,8 @@
-*.exe
 *.dec
+*.exe
 *.fb
-subleq
-muxleq
+*.lzp
 *.lzss
 *.orig
+muxleq
+subleq

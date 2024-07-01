@@ -23,6 +23,9 @@
 \ TODO: Refactor and factor
 
 defined chars 0= [if] : chars ; immediate [then]
+defined recreate-file 0= [if] 
+ : recreate-file create-file ; 
+[then]
 
 : array   create cells allot does> swap cells + ;
 : carray  create chars allot does> swap chars + ;
@@ -31,14 +34,20 @@ defined chars 0= [if] : chars ; immediate [then]
 variable infile  0 infile !   \ Input file handle
 variable outfile 0 outfile !  \ Output file handle
 
-: read-char infile @ key-file ; ( -- char  ) 
+defined +ffs [if]
+: read-char infile @ key-file ;
+[else]
+: read-char 
+  infile @ file-eof? ?dup ?exit
+  infile @ key-file ; ( -- char  ) 
+[then]
 
 \ TODO: Rename or use LZSS vocab
 4096 constant n         \ Size of Ring Buffer
 18   constant f         \ Upper Limit for match-length
 2    constant threshold \ Encode string into position & length
                         \ if match-length is greater.
-n    constant nil       \ Index for Binary Search Tree Root
+n    constant null      \ Index for Binary Search Tree Root
 
 variable textsize    \ text size counter
 variable codesize    \ code size counter 
@@ -59,15 +68,15 @@ n 1+    array dad
 \ For i = 0 to N - 1, rson[i] and lson[i] will be the right and
 \ left children of node i. These nodes need not be initialized.
 \ Also, dad[i] is the parent of node i. These are initialized 
-\ to `nil = n`, which stands for `not used.'
+\ to `null = n`, which stands for `not used.'
 \
 \ For i = 0 to 255, rson[N + i + 1] is the root of the tree
 \ for strings that begin with character i.  These are 
-\ initialized to `nil`.  Note there are 256 trees. 
+\ initialized to `null`.  Note there are 256 trees. 
 
 : init-tree ( -- Initialize trees )
-  n 257 + n 1+ do nil i rson ! loop
-  n   0        do nil i  dad ! loop ;
+  n 257 + n 1+ do null i rson ! loop
+  n   0        do null i  dad ! loop ;
 
 \ Insert string of length F, text_buf[r..r+F-1], into one of 
 \ the trees of text_buf[r]'th tree and return the longest-match 
@@ -82,12 +91,12 @@ n 1+    array dad
 : rson? rson @ ;
 
 : insert-node ( r --  )
-  nil over lson ! nil over rson ! 0 match-length !
+  null over lson ! null over rson ! 0 match-length !
   dup text-buf c@ n + 1+ ( r p )
   1                 ( r p cmp )
   begin             ( r p cmp )
     0>= if           ( r p )
-      dup rson? nil <> if
+      dup rson? null <> if
         rson?
       else
         2dup rson !
@@ -95,7 +104,7 @@ n 1+    array dad
         exit
       then
     else            ( r p )
-      dup lson? nil <> if
+      dup lson? null <> if
         lson?
       else
         2dup lson !
@@ -130,24 +139,24 @@ n 1+    array dad
   else
     tuck dad? lson !
   then              ( p )
-  dad nil swap ! ; ( remove p  )
+  dad null swap ! ; ( remove p  )
 
 : delete-node ( p -- Deletes node p from tree.  )
-  dup dad? nil = if drop exit then ( not in tree )
+  dup dad? null = if drop exit then ( not in tree )
   ( case  )              ( p  )
-    dup rson? nil =
+    dup rson? null =
   if
     dup lson?
   else
-    dup lson? nil =
+    dup lson? null =
   if
     dup rson?
   else
     dup lson?          ( p q  )
-    dup rson? nil <> if
+    dup rson? null <> if
       begin
         rson?
-        dup rson? nil =
+        dup rson? null =
       until
       dup lson? over dad? rson !
       dup dad? over lson? dad !
@@ -162,8 +171,8 @@ n 1+    array dad
     over dad? rson !
   else
     over dad? lson !
-  then              ( p  )
-  dad nil swap ! ;           (  )
+  then              ( p )
+  dad null swap ! ; (  )
 
 17 carray code-buf
 variable len
@@ -325,7 +334,7 @@ variable mask
 : unlzss-file outfile ! infile ! lzss-decode ;
   
 : lzss-file-name ( "from" "to" -- ior )
-  w/o create-file ?dup if nip exit then outfile !
+  w/o recreate-file ?dup if nip exit then outfile !
   r/o open-file ?dup if nip outfile @ close-file drop exit then
   infile !
   [ ' lzss-encode ] literal catch
@@ -335,7 +344,7 @@ variable mask
   ?dup if nip exit then ;
 
 : unlzss-file-name ( "from" "to" -- ior )
-  w/o create-file ?dup if nip exit then outfile !
+  w/o recreate-file ?dup if nip exit then outfile !
   r/o open-file ?dup if nip infile @ close-file drop exit then
   infile !
   [ ' lzss-decode ] literal catch
@@ -344,15 +353,29 @@ variable mask
   ?dup if nip nip exit then
   ?dup if nip exit then ;
 
-s" help.txt"      s" help.txt.lzss" lzss-file-name   statistics
-s" help.txt.lzss" s" help.txt.orig" unlzss-file-name statistics
 
 defined +ffs [if]
+\ Forth File System <https://github.com/howerj/ffs> extensions.
 +ffs
-: lzss 
+: lzss ( "from" "to" -- )
   locked!? ro? 
   narg mcopy narg movebuf namebuf lzss-file-name ;
-: unlzss 
+: unlzss ( "from" "to" -- ) 
   locked!? ro? 
   narg mcopy narg movebuf namebuf unlzss-file-name ;
+
+s" help.txt"  s" help.lzss" lzss-file-name throw statistics
+s" help.lzss" s" help.orig" unlzss-file-name throw statistics
+[else]
+\ If `+ffs` is not defined we are most likely running gforth
+\ with the File Access Methods that talk to the normal systems
+\ file system, the file `lzss.fth` and `ffs.fth` should be
+\ present instead.
+
+s" lzss.fth"  s" lzss.lzss" lzss-file-name throw statistics
+s" lzss.lzss" s" lzss.orig" unlzss-file-name throw statistics
+
+s" ffs.fth"  s" ffs.lzss" lzss-file-name throw statistics
+s" ffs.lzss" s" ffs.orig" unlzss-file-name throw statistics
+
 [then]

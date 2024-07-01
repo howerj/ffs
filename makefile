@@ -46,5 +46,8 @@ disk: subleq disk.dec
 disk.dec: subleq ${IMAGE} ${SRC}
 	./subleq ${IMAGE} $@ < ${SRC}
 
+lzss: subleq ${IMAGE} ${SRC} lzss.fth
+	cat lzss.fth - | gforth ${SRC}
+
 clean:
 	git clean -dffx
