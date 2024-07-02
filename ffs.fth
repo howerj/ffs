@@ -244,13 +244,7 @@
 \ implement (such as hard or symbolic links), partly due to
 \ file system limitations and partly due to a lack of need.
 \
-\ TODO: Simple regex/glob engine
-\ TODO: Check disk routine, undelete?
-\ TODO: Given a block find the file it belongs to and whether
-\ it is a head-block.
-\ TODO: Arbitrary execution token for File Access Method
-\ handling, implement opening up memory as a file...This 
-\ requires handles for read/write/file-pos-{get,set}/open/close
+\ TODO: Document each section, capture GIF of usage
 \
 
 defined (order) 0= [if]
@@ -634,8 +628,11 @@ defined eforth [if] : numberify number? ; [else]
 : fvalid? dup 0 fopen-max 1+ within 0= throw ; 
 : findex fvalid? fhandles swap fhandle-size * + ;
 : fundex fhandles - fhandle-size / ;
-\ TODO: Lock files by making their type upper/lower case,
-\ add an unlock command to unlock a file.
+\ N.B. We could lock files by making their type upper or lower
+\ case, we would also need a command to force unlocking, 
+\ perhaps one could be made to force file closing. Turning the
+\ machine off and on also works however (or reopening the
+\ program).
 : locked? ( dir -- f )
   >r 0
   begin
@@ -1057,63 +1054,6 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
     blk.end =
   until <> throw ;
 
-\ ### Block Editor
-\
-\ This implements a block editor that operates on discontinuous 
-\ blocks. SUBLEQ eForth contains a block editor that operates
-\ on continuous blocks if one is needed, as it allows the
-\ blocks to be directly addressed which is hidden from the
-\ user with this editor.
-\
-\ There is a help section later on in this file for this 
-\ editor. New blocks will be automatically allocated as needed.
-\
-\ A line oriented editor could be made as we have the file
-\ access words to do so now.
-\
-\ All the editor commands are contained within their own
-\ `{edlin}` vocabulary.
-\
-\ A command to delete the current working block would be 
-\ useful, instead of the `r` command which is a poor facsimile.
-\
-\ TODO: File locking?
-wordlist constant {edlin}
-{edlin} +order definitions
-variable vista 1 vista ! \ Used to be `scr`
-variable head 1 head !
-variable line 0 line !
-: s save ; ( -- : save edited block )
-: q s [ {edlin} ] literal -order ( dos ) ; ( -- : quit editor )
-: ? head @ . vista @ . line @ . ; ( -- : print blk and line )
-: l vista @ block? list ; ( -- : list current block )
-: x q head @ link-load
-    [ {edlin} ] literal +order ; ( -- : exe file )
-: ia 2 ?depth 
-  [ $6 ] literal lshift + vista @ addr? + tib
-  >in @ + swap source nip >in @ - cmove tib @ >in ! ;
-: a 0 swap ia ; : i a ; ( line --, "line" : insert line at )
-: w get-order [ {edlin} ] literal 1 ( -- : list cmds )
-     set-order words set-order ; 
-: n 0 line ! s vista @ link blk.end = if 
-    balloc dup bblk head @ fat-append 
-  then
-  vista @ link vista ! ( l ) ;
-: p ( -- : prev block )
-  0 line ! s head @ vista @ previous vista ! ( l ) ; 
-: y vista @ >copy ;
-: u vista @ copy> save ;
-: z vista @ addr? b/buf blank ; ( -- : erase current block )
-: d 1 ?depth >r vista @ addr? r> [ $6 ] literal lshift +
-   [ $40 ] literal blank ; ( line -- : delete line )
-: - line @ -1 line +! line @ 0< if l/blk 1- line ! p then ;
-: + line @ a 1 line +! line @ l/blk >= if 0 line ! n then ;
-: r head @ bcount 1- head @ btruncate head @ vista ! ;
-{ffs} +order definitions
-: edlin ( BLOCK editor )
-  vista ! head ! 0 line ! ( only ) [ {edlin} ] literal +order ; 
-{edlin} -order
-
 \ ### Command Helper Words
 
 : .type ( blk line -- : print directory entry type )
@@ -1253,9 +1193,17 @@ wordlist constant {required}
   >r get-order {required} +order definitions r> entry >r
   set-order definitions r> ;
 
-\ ### File Helper Words
+\ ## File Access Methods
 \
-\ Missing is a way of opening memory up as 
+\ This section contains helper words for the File Access 
+\ Methods and then the File Access Methods themselves, which
+\ are standard Forth words, albeit extension words and thus
+\ are sometimes not present.
+\
+\ Missing is a way of opening memory up as a file, this would
+\ require us to add a level of indirection on many of the File
+\ Access Methods and store Execution Tokens within the file
+\ handle structure.
 \
 : unused? ( -- ptr f : find a free handle if one exists )
   0
@@ -1566,6 +1514,11 @@ r/o w/o or constant r/w ( -- fam : read/write )
   ?dup if nip exit then
   0= swap tuck 0= and ;
 
+\ ## Utility Helper Functions
+\
+\ We can now build utilities using these File Access Methods,
+\ along with more primitive ways of directly accessing the
+\ file system. We are free to mix and match here.
 
 {ffs} +order definitions
 
@@ -1664,6 +1617,197 @@ r/o w/o or constant r/w ( -- fam : read/write )
     then
     1+
   repeat drop rdrop ; 
+
+\ ### Block Editor
+\
+\ This implements a block editor that operates on discontinuous 
+\ blocks. SUBLEQ eForth contains a block editor that operates
+\ on continuous blocks if one is needed, as it allows the
+\ blocks to be directly addressed which is hidden from the
+\ user with this editor.
+\
+\ There is a help section later on in this file for this 
+\ editor. New blocks will be automatically allocated as needed.
+\
+\ A line oriented editor could be made as we have the file
+\ access words to do so now.
+\
+\ All the editor commands are contained within their own
+\ `{edlin}` vocabulary.
+\
+\ A command to delete the current working block would be 
+\ useful, instead of the `r` command which is a poor facsimile.
+\
+\ In order to lock the file we are editing we open up a file
+\ handle using `open-file` later when we call `edlin` and store
+\ it in `flock`. Otherwise the File Access Methods are not used
+\ for editing.
+\
+wordlist constant {edlin}
+{edlin} +order definitions
+variable vista 1 vista ! \ Used to be `scr`
+variable head 1 head !
+variable line 0 line !
+variable flock -1 flock !
+: s save ; ( -- : save edited block )
+: q s [ {edlin} ] literal -order ( -- : quit editor )
+  flock @ close-file -1 flock ! throw ( dos ) ; 
+: ? head @ . vista @ . line @ . ; ( -- : print blk and line )
+: l vista @ block? list ; ( -- : list current block )
+: x q head @ link-load
+    [ {edlin} ] literal +order ; ( -- : exe file )
+: ia 2 ?depth 
+  [ $6 ] literal lshift + vista @ addr? + tib
+  >in @ + swap source nip >in @ - cmove tib @ >in ! ;
+: a 0 swap ia ; : i a ; ( line --, "line" : insert line at )
+: w get-order [ {edlin} ] literal 1 ( -- : list cmds )
+     set-order words set-order ; 
+: n 0 line ! s vista @ link blk.end = if 
+    balloc dup bblk head @ fat-append 
+  then
+  vista @ link vista ! ( l ) ;
+: p ( -- : prev block )
+  0 line ! s head @ vista @ previous vista ! ( l ) ; 
+: y vista @ >copy ;
+: u vista @ copy> save ;
+: z vista @ addr? b/buf blank ; ( -- : erase current block )
+: d 1 ?depth >r vista @ addr? r> [ $6 ] literal lshift +
+   [ $40 ] literal blank ; ( line -- : delete line )
+: - line @ -1 line +! line @ 0< if l/blk 1- line ! p then ;
+: + line @ a 1 line +! line @ l/blk >= if 0 line ! n then ;
+: r head @ bcount 1- head @ btruncate head @ vista ! ;
+{ffs} +order definitions
+: edlin ( BLOCK editor )
+  flock !
+  vista ! head ! 0 line ! ( only ) [ {edlin} ] literal +order ; 
+{edlin} -order
+
+\ ## LZP Compression CODEC
+\
+\ This code uses LZP to make a compression CODEC, for more
+\ information see <https://github.com/howerj/lzp>.
+\
+
+\ TODO: This code is buggy under FFS, especially under SUBLEQ
+\ eForth...this might actually be due to differences in the
+\ file system layer and not this LZP code, as it seems to be
+\ working fine under GForth but not under SUBLEQ eForth.
+
+wordlist constant {lzp} {lzp} +order definitions
+
+\ defined eforth [if] 8 [else] 16 [then] constant model-bits
+8 constant model-bits
+1 model-bits lshift constant model-size
+create model model-size allot align
+create buf 9 allot align
+variable bufp
+variable fin
+variable infile
+variable outfile
+variable ocnt
+variable icnt
+variable prediction
+variable mask
+variable run
+
+: +hash  ( h c -- h )
+  swap 4 lshift xor [ model-size 1- ] literal and ; 
+
+\ Need for gforth `key-file`, not this version of `key-file`.
+\
+\ : get ( file -- c|-1 )
+\  infile @ key-file dup 0< if fin ! exit then 
+\  infile @ file-eof? if drop -1 fin ! -1 exit then
+\  1 icnt +! ;
+
+: get ( file -- c|-1 )
+  infile @ key-file dup 0< if fin ! exit then 1 icnt +! ;
+
+: put outfile @ emit-file throw 1 ocnt +! ; ( c -- )
+: predict prediction @ swap +hash prediction ! ; ( c -- )
+: reset
+  0 prediction !
+  0 fin ! 
+  0 icnt ! 0 ocnt !
+  buf 9 erase
+  model model-size erase ;
+: model? prediction @ model + c@ ; ( -- c )
+: model! prediction @ model + c! ; ( c -- )
+: breset 1 bufp ! 0 buf c! 0 run ! ;
+: wbuf 
+  run @ if
+    buf bufp @ 1- for
+      count put
+    next drop
+  then breset ;
+: lzp-encode ( -- ior )
+  reset
+  begin
+    breset
+    0 begin
+      dup 8 < fin @ 0= and
+    while
+      get >r r@ 0< if wbuf rdrop drop 0 exit then
+      -1 run !
+      r@ model? = if
+        dup 1 swap lshift buf c@ or buf c!
+      else
+        r@ model! 
+        r@ buf bufp @ + c! 
+        1 bufp +!
+      then 
+      r> predict
+      1+
+    repeat drop
+    wbuf
+  fin @ until 0 ;
+: lzp-decode ( -- ior )
+  reset
+  begin
+    get dup 0< if drop 0 exit then
+    0 begin
+      dup 8 <
+    while
+      2dup 1 swap lshift and if
+        model?
+      else
+        get dup 0< if drop 2drop 0 exit then
+        dup model!
+      then
+      dup put predict
+      1+
+    repeat 2drop
+  fin @ until 0 ;
+
+: lzp-statistics ( -- )
+  cr
+  ." in : " icnt @ . cr
+  ." out: " ocnt @ . cr ;
+
+: lzp-file outfile ! infile ! lzp-encode ;
+: unlzp-file outfile ! infile ! lzp-decode ;
+  
+: lzp-file-name ( "from" "to" -- ior )
+  w/o recreate-file ?dup if nip exit then outfile !
+  r/o open-file ?dup if nip outfile @ close-file drop exit then
+  infile !
+  [ ' lzp-encode ] literal catch
+  infile @ close-file 0 infile !
+  outfile @ close-file 0 outfile !
+  ?dup if nip nip exit then
+  ?dup if nip exit then ;
+
+: unlzp-file-name ( "from" "to" -- ior )
+  w/o recreate-file ?dup if nip exit then outfile !
+  r/o open-file ?dup if nip infile @ close-file drop exit then
+  infile !
+  [ ' lzp-decode ] literal catch
+  infile @ close-file 0 infile !
+  outfile @ close-file 0 outfile !
+  ?dup if nip nip exit then
+  ?dup if nip exit then ;
+
+\ ## DOS Commands
 
 {dos} +order definitions
 
@@ -1916,7 +2060,8 @@ r/o w/o or constant r/w ( -- fam : read/write )
 : f2b ( "file" "file" -- convert byte file to block file )
   [ ' (f2b) ] literal with-files ;
 {edlin} +order
-: edit ro? narg (create) dup (round) edlin ; ( "file" -- )
+: edit ro? narg (create) dup (round) 
+  namebuf r/o open-file throw edlin ; ( "file" -- )
 {edlin} -order
 : export ( -- : export file system )
   dsl
@@ -2022,11 +2167,25 @@ r/o w/o or constant r/w ( -- fam : read/write )
     r@ emit-file drop
   repeat drop
   r> close-file r> base ! throw ;
+{lzp} +order
+: lzp ( "from" "to" -- )
+  peekd locked!? ro? 
+  narg namebuf mcopy narg movebuf namebuf lzp-file-name 
+  lzp-statistics ;
+: unlzp ( "from" "to" -- ) 
+  peekd locked!? ro? 
+  narg namebuf mcopy narg movebuf namebuf unlzp-file-name
+  lzp-statistics ;
+{lzp} -order
 
-\ : defrag ; \ compact disk
-\ : chkdsk ;
+\ `chkdsk` and `defrag` are missing. These would be complex
+\ commands for interactively repairing broken disks and
+\ for defragmenting the disk respectively.
 
-\ Aliases
+\ ### Aliases
+\
+\ Aliases for commands 
+\
 : chdir cd ; ( "dir" -- change Present Working Directory )
 : cls page ; ( -- : clear screen )
 : cp copy ; ( "file" "file" -- copy file )
@@ -2034,26 +2193,27 @@ r/o w/o or constant r/w ( -- fam : read/write )
 : ed edit ; ( "file" -- edit file )
 : touch mkfile ; ( "file" -- : create a file )
 : diff cmp ; ( "file" "file" -- : compare two files )
-\ : sh script ; ( "file" -- execute file ) \ Clashes in Gforth
+( : sh script ; ( "file" -- execute file ) \ Clashes in Gforth
 ( : bye halt ; ) \ Clashes with FORTHs `bye`word.
 ( : exit halt ; ) \ Clashes with FORTHs `exit` word.
 ( : quit halt ; ) \ Clashes with FORTHs `quit` word.
 ( : move mv ; ) \ Clashes with FORTHs `move` word.
 ( : type cat ; ) \ Clashes with FORTHs `type` word.
 
+\ ## Initializing Disk
+
 mount loaded @ 0= [if]
 cr .( FFS NOT PRESENT, FORMATTING... ) cr
 fdisk
-\ Nested brackets ifs do not work in SUBLEQ eFORTH...)
-\ TODO: Put all these files in a `/system` directory when
-\ `resolve` works correctly.
+\ Nested compile time [ if ] s do not work in SUBLEQ eFORTH...
+mkdir system
+cd system
 defined eforth 0= ?\ mknod [BOOT] 0
 defined eforth 0= ?\ mknod [FAT] 1
 defined eforth    ?\ mknod [BOOT] 65
 defined eforth    ?\ mknod [FAT] 66
 defined eforth    ?\ mknod [KERNEL] 1
-mkdir home
-mkdir bin
+cd ..
 edit demo.blk
 + .( HELLO, WORLD ) cr
 + 2 2 + . cr
@@ -2109,6 +2269,7 @@ file: help.txt
 | login: password login (NOP if no users) (SUBLEQ eForth only)
 | ls / dir : list directory
 | lsuser: List all users in login system (SUBLEQ eFORTH only)
+| lzp <FILE1> <FILE2>: LZP Compress <FILE1> into <FILE2>
 | melt: Unfreeze file system - Turn off read only mode
 | mkdir <DIR>: make a directory
 | mknod <FILE> <NUM>: make a special <FILE> with <NUM>
@@ -2125,6 +2286,7 @@ file: help.txt
 | stat <FILE>: display detailed information on <FILE>
 | touch / mkfile <FILE>: make a new file
 | tree: recursively print directories from the current one
+| unlzp <FILE1> <FILE2>: LZP Decompress <FILE1> into <FILE2>
 | wc <FILE>: display byte, word and line count of a file
 | yes <FILE> <STR> <NUM>: fill <FILE> with <NUM> lines of <STR>
 | 
@@ -2289,6 +2451,8 @@ file: errors.db
 | -75 WRITE-FILE
 | -76 WRITE-LINE
 ;file
+\ lzp help.txt help.lzp
+\ unlzp help.lzp help.orig
 .( DONE ) cr
 [then]
 
@@ -2298,6 +2462,7 @@ forth-wordlist +order definitions
 : +system system +order ;
 : dos ( only ) +dos +ffs mount {ffs} -order ;
 
+\ TODO: Move this!
 defined eforth 0= [if]
 \ If we are running in eForth we want to add the definitions
 \ to the main Forth vocabulary, otherwise we want to add them
@@ -2385,135 +2550,4 @@ defined eforth [if]
 ' reboot <quit> !
 [then]
 
-\ TODO: This code is buggy under FFS
-
-wordlist constant {lzp} {lzp} +order definitions
-
-\ defined eforth [if] 8 [else] 16 [then] constant model-bits
-8 constant model-bits
-1 model-bits lshift constant model-size
-create model model-size allot align
-create buf 9 allot align
-variable bufp
-variable fin
-variable infile
-variable outfile
-variable ocnt
-variable icnt
-variable prediction
-variable mask
-variable run
-
-defined +hash 0= [if] ( default hash model )
-: +hash  ( h c -- h )
-  swap 4 lshift xor [ model-size 1- ] literal and ; 
-[then]
-
-: get ( file -- c|-1 )
-  infile @ key-file dup 0< if fin ! exit then 
-  infile @ file-eof? if drop -1 fin ! -1 exit then
-  1 icnt +! ;
-
-: put outfile @ emit-file throw 1 ocnt +! ; ( c -- )
-: predict prediction @ swap +hash prediction ! ; ( c -- )
-: reset
-  0 prediction !
-  0 fin ! 
-  0 icnt ! 0 ocnt !
-  buf 9 erase
-  model model-size erase ;
-: model? prediction @ model + c@ ; ( -- c )
-: model! prediction @ model + c! ; ( c -- )
-: breset 1 bufp ! 0 buf c! 0 run ! ;
-: wbuf 
-  run @ if
-    buf bufp @ 1- for
-      count put
-    next drop
-  then breset ;
-: lzp-encode ( -- ior )
-  reset
-  begin
-    breset
-    0 begin
-      dup 8 < fin @ 0= and
-    while
-      get >r r@ 0< if wbuf rdrop drop 0 exit then
-      -1 run !
-      r@ model? = if
-        dup 1 swap lshift buf c@ or buf c!
-      else
-        r@ model! 
-        r@ buf bufp @ + c! 
-        1 bufp +!
-      then 
-      r> predict
-      1+
-    repeat drop
-    wbuf
-  fin @ until wbuf 0 ;
-: lzp-decode ( -- ior )
-  reset
-  begin
-    get dup 0< if drop 0 exit then
-    0 begin
-      dup 8 <
-    while
-      2dup 1 swap lshift and if
-        model?
-      else
-        get dup 0< if drop 2drop 0 exit then
-        dup model!
-      then
-      dup put predict
-      1+
-    repeat 2drop
-  fin @ until 0 ;
-
-: lzp-statistics ( -- )
-  ." in : " icnt @ . cr
-  ." out: " ocnt @ . cr
-  icnt @ if
-    ." saved: " icnt @ ocnt @ - 100 icnt @ * / \ TODO: */
-    . ." %" cr
-  then ;
-
-: lzp-file outfile ! infile ! lzp-encode ;
-: unlzp-file outfile ! infile ! lzp-decode ;
-  
-: lzp-file-name ( "from" "to" -- ior )
-  w/o recreate-file ?dup if nip exit then outfile !
-  r/o open-file ?dup if nip outfile @ close-file drop exit then
-  infile !
-  [ ' lzp-encode ] literal catch
-  infile @ close-file 0 infile !
-  outfile @ close-file 0 outfile !
-  ?dup if nip nip exit then
-  ?dup if nip exit then ;
-
-: unlzp-file-name ( "from" "to" -- ior )
-  w/o recreate-file ?dup if nip exit then outfile !
-  r/o open-file ?dup if nip infile @ close-file drop exit then
-  infile !
-  [ ' lzp-decode ] literal catch
-  infile @ close-file 0 infile !
-  outfile @ close-file 0 outfile !
-  ?dup if nip nip exit then
-  ?dup if nip exit then ;
-
-+dos definitions
-
-: lzp ( "from" "to" -- )
-  peekd locked!? ro? 
-  narg namebuf mcopy narg movebuf namebuf lzp-file-name 
-  lzp-statistics ;
-: unlzp ( "from" "to" -- ) 
-  peekd locked!? ro? 
-  narg namebuf mcopy narg movebuf namebuf unlzp-file-name
-  lzp-statistics ;
-
-{lzp} -order
-
-\ lzp help.txt help.lzp
-\ unlzp help.lzp help.orig
 

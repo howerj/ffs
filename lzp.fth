@@ -149,9 +149,11 @@ s" help.lzp" s" help.orig" unlzp-file-name throw lzp-statistics
 s" lzp.fth"  s" lzp.lzp" lzp-file-name throw lzp-statistics
 s" lzp.lzp" s" lzp.orig" unlzp-file-name throw lzp-statistics
 
-s" ffs.fb"  s" ffs.lzp" lzp-file-name throw lzp-statistics
-s" ffs.lzp" s" ffs.orig" unlzp-file-name throw lzp-statistics
+\ s" ffs.fb"  s" ffs.lzp" lzp-file-name throw lzp-statistics
+\ s" ffs.lzp" s" ffs.orig" unlzp-file-name throw lzp-statistics
 
+s" zero.bin"  s" zero.lzp" lzp-file-name throw lzp-statistics
+s" zero.lzp" s" zero.orig" unlzp-file-name throw lzp-statistics
 
 [then]
 
