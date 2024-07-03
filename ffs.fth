@@ -1688,41 +1688,35 @@ variable flock -1 flock !
 \ information see <https://github.com/howerj/lzp>.
 \
 
-\ TODO: This code is buggy under FFS, especially under SUBLEQ
-\ eForth...this might actually be due to differences in the
-\ file system layer and not this LZP code, as it seems to be
-\ working fine under GForth but not under SUBLEQ eForth.
-
 wordlist constant {lzp} {lzp} +order definitions
 
-\ defined eforth [if] 8 [else] 16 [then] constant model-bits
 8 constant model-bits
 1 model-bits lshift constant model-size
-create model model-size allot align
-create buf 9 allot align
-variable bufp
-variable fin
-variable infile
-variable outfile
-variable ocnt
-variable icnt
-variable prediction
-variable mask
-variable run
+create model model-size allot align \ Sie ist ein Model...
+create buf 9 allot align \ Control Byte + Up to 8 literals
+variable bufp       \ Pointer into `buf`
+variable fin        \ End of Input?
+variable infile     \ File handle for input
+variable outfile    \ File handle for output
+variable icnt       \ Bytes in input text
+variable ocnt       \ Bytes in output text
+variable prediction \ Current prediction state / hash value
+variable run        \ Do we have a run of data?
 
 : +hash  ( h c -- h )
   swap 4 lshift xor [ model-size 1- ] literal and ; 
 
-\ Need for gforth `key-file`, not this version of `key-file`.
+\ Needed for gforth `key-file` that comes with gforth and uses
+\ the systems file system, not the one provided by `ffs` which
+\ behaves differently.
 \
-\ : get ( file -- c|-1 )
-\  infile @ key-file dup 0< if fin ! exit then 
-\  infile @ file-eof? if drop -1 fin ! -1 exit then
-\  1 icnt +! ;
-
+\        : get ( file -- c|-1 )
+\          infile @ key-file dup 0< if fin ! exit then 
+\          infile @ file-eof? if drop -1 fin ! -1 exit then
+\          1 icnt +! ;
+\
 : get ( file -- c|-1 )
-  infile @ key-file dup 0< if fin ! exit then 1 icnt +! ;
-
+  infile @ key-file dup 0< if -1 fin ! exit then 1 icnt +! ;
 : put outfile @ emit-file throw 1 ocnt +! ; ( c -- )
 : predict prediction @ swap +hash prediction ! ; ( c -- )
 : reset
@@ -1749,14 +1743,14 @@ variable run
     while
       get >r r@ 0< if wbuf rdrop drop 0 exit then
       -1 run !
-      r@ model? = if
+      r@ model? = if \ Match! Set bit in control byte
         dup 1 swap lshift buf c@ or buf c!
-      else
+      else \ No match, update model and output literal byte
         r@ model! 
         r@ buf bufp @ + c! 
         1 bufp +!
       then 
-      r> predict
+      r> predict \ Update hash either way
       1+
     repeat drop
     wbuf
