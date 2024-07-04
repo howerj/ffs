@@ -247,6 +247,21 @@
 \ TODO: Document each section, capture GIF of usage
 \
 
+\ ## Basic Word Definitions
+\
+\ If you can seen one Forth, you can seen one Forth. Words
+\ which are deemed indispensable to one Forth programmer are
+\ cast by the wayside by another. This section, common to
+\ every non-trivial Forth program, defines basic words which
+\ may or may not be present depending on which Forth this
+\ program is running under.
+\
+
+
+\ `(order)`, `+order` and `-order` make using word-lists
+\ easy, they should be standard, to back this with objective 
+\ evidence I present the irrefutable - my opinion on the 
+\ matter.
 defined (order) 0= [if]
 : (order) ( w wid*n n -- wid*n w n )
   dup if
@@ -257,11 +272,16 @@ defined (order) 0= [if]
 : +order dup >r -order get-order r> swap 1+ set-order ;
 [then]
 
+defined wordlist 0= [if]
+: wordlist here cell allot 0 over ! ; ( -- wid : alloc wid )
+[then]
+
 defined eforth [if]
 system +order
-: wordlist here cell allot 0 over ! ; ( -- wid : alloc wid )
 : quine source type cr ; ' quine <ok> !
 [else]
+\ Assume `gforth`, and use the file `ffs.db` to back the
+\ file system.
 use ffs.fb
 [then]
 
@@ -309,6 +329,8 @@ defined spaces 0= [if]
 : spaces begin ?dup 0> while bl emit 1- repeat ;
 [then]
 
+\ SUBLEQ eForth lacks `s"`, instead using counted strings
+\ where possible with `$"` and internally in `."`.
 defined eforth [if] system +order [then]
 defined s" 0= [if]
 : s" 
@@ -324,8 +346,17 @@ defined /string 0= [if]
   over min rot over + -rot - ;
 [then]
 
+\ The word `?\` offers another mechanism for conditional
+\ compilation, an analogue using the parenthesis comment
+\ method can also be defined like so:
+\ 
+\        : ?( ?exit postpone ( ;
+\
+\ Perhaps a word called `?:` could be defined, which would
+\ be more complex, to mean "If following word is not defined
+\ then define it". 
+\
 : ?\ ?exit postpone \ ; ( f "line"? -- )
-\ : ?( ?exit postpone ( ;
 
 \ If needed, `toggle` is:
 \
@@ -334,11 +365,20 @@ defined /string 0= [if]
 : set tuck @ or swap ! ; ( u a -- )
 : clear tuck @ swap invert and swap ! ; ( u a -- )
 
-: lower? 97 123 within ; ( ch -- f )
+\ `lower?` and `>upper` do not need defining, but are here
+\ for the sake of completeness.
+\
+\        : lower? 97 123 within ; ( ch -- f )
+\        : >upper dup lower? 32 and xor ; ( ch -- ch )
+\
 : upper? 65 91 within ; ( ch -- f )
 : >lower dup upper? 32 and xor ; ( ch -- ch )
-: >upper dup lower? 32 and xor ; ( ch -- ch )
 
+\ Case insensitivity is off by default and is less tested, so 
+\ may cause problems. `icompare` implements a case insensitive
+\ comparison, it is ASCII aware only and will not work for
+\ UTF-8 (Well Unicode, not UTF-8).
+\
 : icompare ( a1 u1 a2 u2 -- n : string comparison )
   rot
   over >lower swap >lower swap - ?dup 
@@ -357,7 +397,7 @@ defined /string 0= [if]
 : prefix rot min tuck compare ; ( c1 u1 c2 u2 -- f )
 : iprefix rot min tuck icompare ; ( c1 u1 c2 u2 -- f )
 
-defined search 0= [if]
+defined search 0= [if] \ Not defined in SUBLEQ eForth
 : search ( c1 u1 c2 u2 -- c3 u3 f : find c2/u2 in c1/u1 )
   swap >r >r 2dup
   begin
@@ -370,6 +410,7 @@ defined search 0= [if]
   2drop rdrop rdrop 0 ;
 [then]
 
+\ A case insensitive version of `search`.
 : isearch ( c1 u1 c2 u2 -- c3 u3 f : find c2/u2 in c1/u1 )
   swap >r >r 2dup
   begin
@@ -381,6 +422,9 @@ defined search 0= [if]
   repeat
   2drop rdrop rdrop 0 ;
 
+\ `untype` does the opposite of `type`, instead of displaying
+\ string it gets bytes from the input stream and puts them
+\ in a string.
 : untype ( c-addr u -- remaining ior )
   dup >r
   begin
@@ -390,7 +434,7 @@ defined search 0= [if]
     +string
   repeat 2drop r> 0 ;
 
-: replace ( c1 c2 c-addr u -- : string replace c2 with c1 )
+: replace ( c1 c2 c-addr u -- : replace c2 with c1 in string )
   begin
     ?dup
   while
@@ -428,7 +472,7 @@ variable seed 7 seed ! ( must not be zero )
 defined b/buf 0= [if] 1024 constant b/buf [then]
 defined d>s 0= [if] : d>s drop ; [then]
 
-wordlist constant {ffs} 
+wordlist constant {ffs}
 {ffs} +order definitions
 wordlist constant {dos}
 
@@ -992,38 +1036,6 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
 : dir? dirent-type@ [char] D = ; ( dir line -- f )
 : special? dirent-type@ [char] S = ; ( dir line -- f )
 : file? dirent-type@ [char] F = ; ( dir line -- f )
-: ndir ( c-addr u -- u f : parse next file name in path a/b/c )
-  0 -rot
-  begin
-    ?dup
-  while
-    over c@ [char] / = if 2drop -1 exit then
-    rot 1+ -rot
-    +string
-  repeat drop 0 ;
-\ TODO: Implement this, Handle "." and "..", add flag to
-\ indicate ".." used, or not current dir.
-: resolve ( c-addr u -- dir line n )
-  dup 0= throw
-  over c@ [char] / = if dirstart else peekd then
-  >r 0 >r
-
-  begin
-    ?dup
-  while
-    2dup ndir if
-      \ TODO: Handle "." and ".." here
-      ( c-addr u1 u2 ) 2 pick over 2>r /string 2r>
-      r@ dir-find dup 0< if
-        
-      else
-        drop 2drop 2r> -1 exit
-      then
-    else
-      drop over c@ [char] / <> throw
-      +string
-    then
-  repeat drop 2r> ;
 : (remove) ( dir line f -- )
   ro?
   2 pick locked!?
@@ -1054,7 +1066,7 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
     blk.end =
   until <> throw ;
 
-\ ### Command Helper Words
+\ ## Command Helper Words
 
 : .type ( blk line -- : print directory entry type )
     2dup dir?     if ." DIR   " then
@@ -1518,7 +1530,12 @@ r/o w/o or constant r/w ( -- fam : read/write )
 \
 \ We can now build utilities using these File Access Methods,
 \ along with more primitive ways of directly accessing the
-\ file system. We are free to mix and match here.
+\ file system. We are free to mix and match here. There is
+\ no real structure to this section, there is a menagerie of
+\ helping words, often one per command that will be implemented
+\ later, for example `(cmp)` is used to implement the command
+\ `cmp`.
+\
 
 {ffs} +order definitions
 
@@ -1618,7 +1635,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
     1+
   repeat drop rdrop ; 
 
-\ ### Block Editor
+\ ## Block Editor
 \
 \ This implements a block editor that operates on discontinuous 
 \ blocks. SUBLEQ eForth contains a block editor that operates
@@ -1685,7 +1702,9 @@ variable flock -1 flock !
 \ ## LZP Compression CODEC
 \
 \ This code uses LZP to make a compression CODEC, for more
-\ information see <https://github.com/howerj/lzp>.
+\ information see <https://github.com/howerj/lzp>, and
+\ <https://github.com/howerj/shrink>. The CODEC is very
+\ simple and does not have that great of a compression ratio.
 \
 
 wordlist constant {lzp} {lzp} +order definitions
@@ -1802,6 +1821,10 @@ variable run        \ Do we have a run of data?
   ?dup if nip exit then ;
 
 \ ## DOS Commands
+\
+\ This section has a series commands that form the interface
+\ between the file system and the user. These are the words
+\ that form the core of this module.
 
 {dos} +order definitions
 
@@ -1941,12 +1964,12 @@ variable run        \ Do we have a run of data?
   #rem found? dirent-rem!
   r> found? dirent-blk! 
   [char] S found? dirent-type! ;
-: bgrep ( search file -- : search a file for a string )
+: bgrep ( search file -- : search a blocks for a string )
   cr
   token count mcopy
   narg namebuf peekd dir-find dup 0< EFILE error
   peekd swap dirent-blk@ [ ' (grep) ] literal apply ; 
-: grep ( "search" "file" -- )
+: grep ( "search" "file" -- : search file for a string )
   token count mcopy
   narg namebuf r/o open-file throw >r
   begin
@@ -1960,11 +1983,11 @@ variable run        \ Do we have a run of data?
   repeat
   drop
   r> close-file throw ;
-\ N.B. Very slow in SUBLEQ eForth because of poor performance
-\ of `read-line`. This should be improved. It is especially a
-\ problem when executing files formatted as Forth blocks, as
-\ `read-line` searches the entire buffer for an End Of Line
-\ marker.
+\ N.B. `script` is very slow in SUBLEQ eForth because of poor 
+\ performance of `read-line`. This should be improved. It is 
+\ especially a problem when executing files formatted as Forth 
+\ blocks, as `read-line` searches the entire buffer for an End 
+\ Of Line marker.
 : script ( "file" -- )
   narg namebuf r/o open-file throw >r
   begin
@@ -2024,7 +2047,7 @@ variable run        \ Do we have a run of data?
   >r
   begin r@ key-file dup 0>= while emit repeat drop
   r> close-file throw ;
-: more ( "file" -- )
+: more ( "file" -- : display a file with breaks )
   token count r/o open-file throw
   >r 0
   begin r@ key-file dup 0>= 
@@ -2038,7 +2061,7 @@ variable run        \ Do we have a run of data?
   repeat 2drop
   r> close-file throw ." EOF" cr ;
 : bcat (file) [ ' +list ] literal apply ; ( "file" -- )
-: bmore (file) link-more ; ( "file" -- )
+: bmore (file) link-more ; ( "file" -- : display blocks )
 : exe (file) link-load  ; ( "file" -- )
 : hexdump ( "file" -- : nicely formatted hexdump of file )
   token count -1 (hexhump) ;
@@ -2049,9 +2072,9 @@ variable run        \ Do we have a run of data?
   cr      dirent-blk@ dup bcount ." BCNT: " u. 
   cr  dup ." HEAD: " u.
   cr ." BLKS: " [ ' u. ] literal apply ;
-: b2f ( "file" "file" -- convert block file to byte file  )
+: b2f ( "file" "file" -- : convert block file to byte file )
   [ ' (b2f) ] literal with-files ;
-: f2b ( "file" "file" -- convert byte file to block file )
+: f2b ( "file" "file" -- : convert byte file to block file )
   [ ' (f2b) ] literal with-files ;
 {edlin} +order
 : edit ro? narg (create) dup (round) 
@@ -2101,17 +2124,17 @@ variable run        \ Do we have a run of data?
   ." WORDS: " u. cr
   ." LINES: " u. cr
   r> close-file throw ;
-: yes ( "file" "string" count -- )
+: yes ( "file" "string" count -- : print string repeatedly )
   ro? narg token count mcopy integer?
   namebuf w/o create-file throw >r
   begin
     ?dup
   while
-    movebuf r@ write-line drop
+    movebuf -trailing r@ write-line drop
     1-
   repeat
   r> close-file throw ;
-: mkrandom ( "file" bytes -- )
+: mkrandom ( "file" bytes -- : file a file with random bytes )
   ro? narg integer? >r namebuf w/o create-file throw r> swap >r
   begin
     ?dup
@@ -2119,6 +2142,17 @@ variable run        \ Do we have a run of data?
     random r@ emit-file drop
     1-
   repeat r> close-file throw ;
+
+\ ### Easy File Creation
+\
+\ This subsection of DOS commands introduces a syntax that
+\ allows the creation of new files, both textual and binary,
+\ so long as no editing is required. Instead of a simple
+\ command that performs an action several words are created 
+\ that work in conjunction.
+\
+\ `file:` and `append:` are defined first for textual files:
+\
 \ Usage:
 \
 \      file: example.txt
@@ -2141,7 +2175,12 @@ variable run        \ Do we have a run of data?
 : | 
   handle @ 0< if discard exit then
   leftovers handle @ write-line ?dup if ;file then discard ;
-\ Create a hex file and allow for numeric input.
+\
+\ `hex:` works slightly differently, it allows the creation of
+\ binary files byte by byte. Once `hex:` and a file name has
+\ been entered a series of hexadecimal numbers can be entered.
+\ The sequence can be terminated with a `.` (or any non
+\ numeric sequence).
 \
 \ Usage:
 \
@@ -2161,6 +2200,16 @@ variable run        \ Do we have a run of data?
     r@ emit-file drop
   repeat drop
   r> close-file r> base ! throw ;
+
+\ ### File Compression
+\
+\ `lzp` and `unlzp` are commands that perform file compression.
+\ The compression routine has already been described, it is
+\ fairly poor in terms of compression performance but it is
+\ simple and can save about 20% of the files size, one some
+\ types of file it can save a lot more (especially files
+\ formatted as Forth blocks).
+\
 {lzp} +order
 : lzp ( "from" "to" -- )
   peekd locked!? ro? 
@@ -2172,13 +2221,68 @@ variable run        \ Do we have a run of data?
   lzp-statistics ;
 {lzp} -order
 
+\ ### Missing Commands
+\
 \ `chkdsk` and `defrag` are missing. These would be complex
 \ commands for interactively repairing broken disks and
 \ for defragmenting the disk respectively.
-
+\
+\ Defragmentation can be performed in a crude way be using
+\ `export` to export the entire file system and then importing
+\ that to a fresh file system. It is not ideal, but it is
+\ much simpler than implementing a defragmentation routine.
+\
+\ To defragment the file system free space is required,
+\ files would have to be moved to the free blocks and placed
+\ back in a more ordered sequence in the holes left over from
+\ moving files around, multiple passes might be required to
+\ fully defragment the system. It is a slow process, the
+\ Wikipedia page on the subject has more information, see
+\ <https://en.wikipedia.org/wiki/Defragmentation>.
+\
+\ For a `chkdsk` or Check Disk routine some recovery routines
+\ could be done semi-automatically. User intervention is 
+\ needed to decided on what to do with broken files. This
+\ file system is non journalling, and although checksums can
+\ be calculated over the various data structures in the file
+\ system they are not automatically applied but instead used
+\ for a manual check of system integrity.
+\
+\ There are some basic checks that can be done:
+\
+\ 1. For the FAT partition a check that all pointers are within
+\ bounds. Checks can be performed that boot and root directory
+\ are also present, and the root directory looks okay (for
+\ example no non-ASCII characters should be present in a
+\ directory entry, the directory header should be present, 
+\ etcetera).
+\ 2. If there are orphaned blocks, these can be collected
+\ together. There is unfortunately no way to determine which
+\ file an orphaned block belongs to, nor if the block was
+\ actually a directory entry. A file could be created for each
+\ orphaned chain.
+\ 3. For each directory entry in all the directories a check 
+\ that there is a corresponding FAT entry.
+\ 4. For all files and directories check that no files overlap 
+\ (use the same blocks).
+\ 5. Bad blocks could be tested for.
+\
+\
+\ There are many more checks that could be thought of and
+\ implemented, the complexity of this command has no upper
+\ bound. At some point it would become easier and more reliable
+\ to add journaling to the file system instead.
+\
 \ ### Aliases
 \
-\ Aliases for commands 
+\ Aliases for commands have been added, some have been
+\ avoided because they clash with Forth words. Common
+\ synonyms from Unix and DOS have been added to make 
+\ programmers familiar with either system more comfortable, and
+\ to lessen the impact of tripping over muscle memory on a new
+\ platform.
+\
+\ Adding an alias is as simple as adding a new word definition.
 \
 : chdir cd ; ( "dir" -- change Present Working Directory )
 : cls page ; ( -- : clear screen )
@@ -2485,7 +2589,11 @@ drop
 
 defined eforth [if]
 \ A primitive user login system [that is super insecure].
-\ If no users are present then we login automatically.
+\ If no users are present then we login automatically. The
+\ action after logging in is the same (it is not customizable 
+\ with an execution token) which is to drop in to the Forth
+\ shell with the FFS commands in the `{dos}` vocabulary loaded.
+\
 system +order
 {ffs} +order
 wordlist +order definitions
@@ -2516,11 +2624,16 @@ users +order definitions create pass , only forth definitions
 : login 0 proceed ! retry dos ; ( -- : enter login system )
 : lsuser get-order secure words set-order ; ( -- )
 
-\ mkuser guest guest
-\ mkuser admin password1
-\ mkuser archer dangerzone
-\ mkuser cyril figgis
-\ mkuser lana stirling
+\ To use the system you have to create some users like so:
+\
+\        mkuser guest guest
+\        mkuser admin password1
+\        mkuser archer dangerzone
+\        mkuser cyril figgis
+\        mkuser lana stirling
+\
+\ Next time `login` is called the user will be greeted with
+\ a login prompt.
 only forth definitions +dos +ffs +system
 [then]
 
@@ -2545,3 +2658,59 @@ defined eforth [if]
 [then]
 
 
+0 [if]
+
+\ : cd ( "dir" -- : change the Present Working Directory )
+\  token count 2dup s" ." equate 0= if 2drop exit then
+\  2dup s" .." equate 0= if 2drop popd drop exit then
+\  2dup s" /" equate 0= if 2drop /root exit then
+\  peekd dir-find dup >r 0< EFILE error
+\  peekd r@ dir? 0= ENDIR error
+\  peekd r> dirent-blk@ pushd ;
+
+variable rdirp    \ Resolve Directory Path Pointer
+variable relative \ Is relative path?
+variable parent   \ Path higher than CWD
+
+create rdirstk maxdir cells allot rdirstk maxdir cells erase
+: rdirp? ( -- )
+  rdirp @ 0 maxdir within 0= if 0 rdirp ! 1 EDDPT error then ;
+: (rdir) rdirp? rdirstk rdirp @ cells + ;
+: rpushd (rdir) ! 1 rdirp +! ; ( dir -- )
+: rpopd rdirp @ if -1 rdirp +! then (rdir) @  ; ( -- dir )
+: rpeekd rpopd dup rpushd ; ( -- dir )
+
+: ndir ( c-addr u -- u f : parse next file name in path a/b/c )
+  0 -rot
+  begin
+    ?dup
+  while
+    over c@ [char] / = if 2drop -1 exit then
+    rot 1+ -rot
+    +string
+  repeat drop 0 ;
+\ TODO: Implement this, Handle "." and "..", add flag to
+\ indicate ".." used, or not current dir.
+: resolve ( c-addr u -- dir line n )
+  dup 0= throw
+  over c@ [char] / = if dirstart else peekd then
+  >r 0 >r
+
+  begin
+    ?dup
+  while
+    2dup ndir if
+      \ TODO: Handle "." and ".." here
+      ( c-addr u1 u2 ) 2 pick over 2>r /string 2r>
+      r@ dir-find dup 0< if
+        
+      else
+        drop 2drop 2r> -1 exit
+      then
+    else
+      drop over c@ [char] / <> throw
+      +string
+    then
+  repeat drop 2r> ;
+
+[then]
