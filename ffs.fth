@@ -312,6 +312,7 @@ defined 2swap 0= [if]
 defined dmax 0= [if]
 : dmax 2over 2over d< if 2swap then 2drop ; ( d1 d2 -- d )
 [then]
+
 defined dmin 0= [if]
 : dmin 2over 2over d> if 2swap then 2drop ; ( d1 d2 -- d )
 [then]
@@ -410,7 +411,8 @@ defined search 0= [if] \ Not defined in SUBLEQ eForth
   2drop rdrop rdrop 0 ;
 [then]
 
-\ A case insensitive version of `search`.
+\ A case insensitive version of `search`. It is optionally
+\ used along with `isearch`.
 : isearch ( c1 u1 c2 u2 -- c3 u3 f : find c2/u2 in c1/u1 )
   swap >r >r 2dup
   begin
@@ -1749,9 +1751,8 @@ variable run        \ Do we have a run of data?
 : breset 1 bufp ! 0 buf c! 0 run ! ;
 : wbuf 
   run @ if
-    buf bufp @ 1- for
-      count put
-    next drop
+    buf bufp @ outfile @ write-file throw
+    bufp @ ocnt +!
   then breset ;
 : lzp-encode ( -- ior )
   reset
@@ -2657,7 +2658,6 @@ defined eforth [if]
 ' reboot <quit> !
 [then]
 
-
 0 [if]
 
 \ : cd ( "dir" -- : change the Present Working Directory )
@@ -2671,6 +2671,10 @@ defined eforth [if]
 variable rdirp    \ Resolve Directory Path Pointer
 variable relative \ Is relative path?
 variable parent   \ Path higher than CWD
+variable rbasename maxname 1+ allot align
+variable isdir    \ Is directory?
+variable rerror   \ Has an error occurred?
+variable rfound   \ Does the file/directory exist?
 
 create rdirstk maxdir cells allot rdirstk maxdir cells erase
 : rdirp? ( -- )
@@ -2679,6 +2683,7 @@ create rdirstk maxdir cells allot rdirstk maxdir cells erase
 : rpushd (rdir) ! 1 rdirp +! ; ( dir -- )
 : rpopd rdirp @ if -1 rdirp +! then (rdir) @  ; ( -- dir )
 : rpeekd rpopd dup rpushd ; ( -- dir )
+: rdircpy dirstk rdirstk maxdir cells cmove dirp @ rdirp ! ;
 
 : ndir ( c-addr u -- u f : parse next file name in path a/b/c )
   0 -rot
@@ -2689,28 +2694,66 @@ create rdirstk maxdir cells allot rdirstk maxdir cells erase
     rot 1+ -rot
     +string
   repeat drop 0 ;
-\ TODO: Implement this, Handle "." and "..", add flag to
-\ indicate ".." used, or not current dir.
+
+\ TODO: This nearly works...edge cases and what to return needs
+\ sorting out before this can be used elsewhere.
+\ TODO: "a/b/c/" should set `isdir`, check it  does
 : resolve ( c-addr u -- dir line n )
+  -1 relative ! 0 parent ! 0 isdir ! 0 rerror !
+  rbasename maxname 1+ erase
   dup 0= throw
-  over c@ [char] / = if dirstart else peekd then
-  >r 0 >r
+  rdircpy
+  over c@ [char] / = if 
+    0 relative ! 0 rdirp ! dirstart rpushd 
+  then
 
   begin
-    ?dup
-  while
-    2dup ndir if
-      \ TODO: Handle "." and ".." here
-      ( c-addr u1 u2 ) 2 pick over 2>r /string 2r>
-      r@ dir-find dup 0< if
-        
-      else
-        drop 2drop 2r> -1 exit
-      then
+    2dup ndir >r nlen? ( c-addr u l, R: f )
+
+    \ TODO: Set basename
+    \ r@ 0= if
+    \  2dup dup rbasename ! rbasename 1+ swap cmove
+    \ then
+
+    2 pick over 2>r 1+ /string 0 max 2r> 
+    ( c-addr u c-addr u, R: f )
+
+    2dup s" ." equate 0= if
+      \ Do nothing.
     else
-      drop over c@ [char] / <> throw
-      +string
+      2dup s" .." equate 0= if
+        -1 parent !
+        rpopd drop
+      else
+        2dup rpeekd dir-find dup dup rfound ! 0< if
+          \ Not found, if this is not the last path component
+          \ then this is an error
+          drop
+          r@ if \ Find an empty file
+            rdrop 2drop 2drop rpeekd dup empty? 0 exit
+          else
+            rdrop 2drop 2drop -1 rerror ! -1 -1 0 exit
+          then
+        else
+          rpeekd over dirent-type@ [char] D = if
+            rpeekd swap dirent-blk@ rpushd
+          else
+            r@ if
+              rdrop rpeekd dup empty? 0 exit
+            else
+              rdrop
+              2drop 2drop
+              -1 rerror !
+              -1 -1 0 exit
+            then
+          then
+          \ cd if directory, unless last one.
+          \ if not directory is this the last path component?
+        then
+      then
     then
-  repeat drop 2r> ;
+    2drop
+    r> 0=
+  until 2drop rpeekd rfound @ -1 ; \ TODO: Wrong directory!
 
 [then]
