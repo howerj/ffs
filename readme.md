@@ -30,12 +30,19 @@ is present.
 `mkdir`, `cd`, `pwd`, `tree`, `cp`, `rename`, `cat`, `hexdump`, 
 `more`, `df`, `halt`, `fdisk`, and `stat`.
 * Full file path parsing is not available and most commands
-operate only using the current working directory.
+operate only using the current working directory. For example 
+you cannot `rm a/b/c`, you would need to `cd a`, `cd b` and 
+then call `rm c`. This is not a limitation of the file system
+but the tools built upon it. Some utilities can parse "." for
+the current directory and ".." for the next directory up such
+as "mv" and "cd" but most cannot.
 * The file system is designed to run as a single user system,
 there is no locking and global variables are used.
 * Only one file system can be mounted at a time.
-* Many commands are block oriented instead of being byte oriented, for
-convenience.
+* Some commands are line oriented, others have block oriented
+analogues such as "cat" (line oriented) and "bcat" (block
+oriented). The block oriented utilities expect the files
+given to them to formatted as a Forth Block would be.
 * There is no redundant FAT block data structure like in 
 FAT-12/FAT-16/FAT-32.
 * Low memory usage: The file system uses kilobytes of data
