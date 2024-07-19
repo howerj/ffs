@@ -102,15 +102,15 @@ An example session recorded with [ttyrec][] (all shorter than
 they should be because of problems converting the recording
 to a GIF):
 
-[1.gif][]
+![Example Session 1](1.gif "Session 1")
 
 And another:
 
-[2.gif][]
+![Example Session 2](2.gif "Session 2")
 
 And another:
 
-[3.gif][]
+![Example Session 3](3.gif "Session 3")
 
 ## References
 
@@ -122,7 +122,4 @@ And another:
 [make]: https://www.gnu.org/software/make/
 [C Compiler]: https://gcc.gnu.org/
 [PATH]: https://en.wikipedia.org/wiki/PATH_(variable)
-[1.gif]: 1.gif
-[2.gif]: 2.gif
-[3.gif]: 3.gif
 [ttyrec]: https://en.wikipedia.org/wiki/Ttyrec
