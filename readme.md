@@ -96,6 +96,22 @@ about 61 blocks, there are special files that are created,
 such as `[KERNEL]` that allow file system access to the SUBLEQ 
 eForth image.
 
+## Example Sessions
+
+An example session recorded with [ttyrec][] (all shorter than 
+they should be because of problems converting the recording
+to a GIF):
+
+[1.gif][]
+
+And another:
+
+[2.gif][]
+
+And another:
+
+[3.gif][]
+
 ## References
 
 * <https://github.com/howerj/subleq>
@@ -106,3 +122,7 @@ eForth image.
 [make]: https://www.gnu.org/software/make/
 [C Compiler]: https://gcc.gnu.org/
 [PATH]: https://en.wikipedia.org/wiki/PATH_(variable)
+[1.gif]: 1.gif
+[2.gif]: 2.gif
+[3.gif]: 3.gif
+[ttyrec]: https://en.wikipedia.org/wiki/Ttyrec
