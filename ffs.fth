@@ -277,6 +277,18 @@ defined wordlist 0= [if]
 : wordlist here cell allot 0 over ! ; ( -- wid : alloc wid )
 [then]
 
+\ The word `?\` offers another mechanism for conditional
+\ compilation, an analogue using the parenthesis comment
+\ method can also be defined like so:
+\ 
+\        : ?( ?exit postpone ( ;
+\
+\ Perhaps a word called `?:` could be defined, which would
+\ be more complex, to mean "If following word is not defined
+\ then define it". 
+\
+: ?\ ?exit postpone \ ; ( f "line"? -- )
+
 defined eforth [if]
 system +order
 \ `quine` is useful for debugging under SUBLEQ eFORTH, it
@@ -293,6 +305,12 @@ defined ?depth 0= [if]
 : ?depth depth 1- > -4 and throw ;
 [then]
 
+\ A lot of double cell arithmetic is used as on 16-bit 
+\ platforms a single cell is not large enough to store a 
+\ reasonable file size. SUBLEQ eFORTH is a 16-bit platform,
+\ whereas GForth is 32 or 64 bit depending on the compilation
+\ target.
+\
 defined du. 0= [if] : du. <# #s #> type ; [then]
 defined d- 0= [if] : d- dnegate d+ ; [then]
 defined d= 0= [if] : d= rot = -rot = and ; [then]
@@ -304,6 +322,28 @@ defined d< 0= [if]
 [then]
 defined d> 0= [if] : d>  2swap d< ; [then]
 defined dabs 0= [if] : dabs s>d if dnegate then ; [then]
+
+cell 2 = ?\ $8000 constant #msb
+cell 4 = ?\ $80000000 constant #msb
+cell 8 = ?\ $8000000000000000 constant #msb
+defined #msb 0= [if] abort" #msb not set" [then]
+
+\ We only need to define "d2/" and "drshift" here (because it
+\ is much more efficient than "um/mod" under SUBLEQ eFORTH),
+\ but for the sake of completeness here are the other double
+\ cell bitwise words which are often lacking.
+\
+\        : d2* over #msb and >r 2* swap 2* swap r> 
+\            if 1 or then ;
+\        : dlshift begin ?dup while >r d2* r> 1- repeat ;
+\        : dand rot and >r and r> ; ( d d -- d )
+\        : dor rot or >r or r> ; ( d d -- d )
+\        : dxor rot xor >r xor r> ; ( d d -- d )
+\
+defined d2/ 0= [if]
+: d2/ dup 1 and >r 2/ swap 2/ r> if #msb or then swap ;
+[then]
+: drshift begin ?dup while >r d2/ r> 1- repeat ; ( d u -- d )
 
 defined 2over 0= [if]
 : 2over >r >r 2dup r> swap >r swap r> r> -rot ;
@@ -320,6 +360,9 @@ defined dmax 0= [if]
 defined dmin 0= [if]
 : dmin 2over 2over d> if 2swap then 2drop ; ( d1 d2 -- d )
 [then]
+
+defined b/buf 0= [if] 1024 constant b/buf [then]
+defined d>s 0= [if] : d>s drop ; [then]
 
 : dsignum ( d -- n : double cell signum function )
   2dup 0 0 d= if 2drop  0 exit then
@@ -350,18 +393,6 @@ defined /string 0= [if]
 : /string ( b u1 u2 -- b u : advance string u2 )
   over min rot over + -rot - ;
 [then]
-
-\ The word `?\` offers another mechanism for conditional
-\ compilation, an analogue using the parenthesis comment
-\ method can also be defined like so:
-\ 
-\        : ?( ?exit postpone ( ;
-\
-\ Perhaps a word called `?:` could be defined, which would
-\ be more complex, to mean "If following word is not defined
-\ then define it". 
-\
-: ?\ ?exit postpone \ ; ( f "line"? -- )
 
 \ If needed, `toggle` is:
 \
@@ -399,6 +430,9 @@ defined /string 0= [if]
     r> 1- >r
   repeat rdrop 2drop 0 ;
 
+\ `prefix` and `iprefix` attempts to find a match on a prefix
+\ of a string (using the smallest string length), they will be 
+\ used within `search` and `isearch`.
 : prefix rot min tuck compare ; ( c1 u1 c2 u2 -- f )
 : iprefix rot min tuck icompare ; ( c1 u1 c2 u2 -- f )
 
@@ -440,6 +474,14 @@ defined search 0= [if] \ Not defined in SUBLEQ eForth
     +string
   repeat 2drop r> 0 ;
 
+\ Many basic string manipulation routines are missing within
+\ Forth, and many proposals are lacking (e.g they allocate
+\ memory dynamically, they are too large, weirdly named, too
+\ particular to the idiosyncrasies of a single programmer, ...)
+\
+\ We need a few extra string manipulation routines, such
+\ as `replace`, and we not be defining many more string
+\ functions.
 : replace ( c1 c2 c-addr u -- : replace c2 with c1 in string )
   begin
     ?dup
@@ -476,9 +518,6 @@ variable seed 7 seed ! ( must not be zero )
   dup #b rshift xor
   dup #c lshift xor
   dup seed! ;
-
-defined b/buf 0= [if] 1024 constant b/buf [then]
-defined d>s 0= [if] : d>s drop ; [then]
 
 wordlist constant {ffs}
 {ffs} +order definitions
@@ -540,12 +579,19 @@ variable error-level 0 error-level !
 : elucidate dup error-level ! ?dup if e>s type ." ?" then ;
 : error swap if dup elucidate throw then drop ; ( f code -- )
 
-$FFF0 constant blk.lastv    \ Last Valid Block
+\ In the FAT table any block number above, and including, 
+\ the hexadecimal value `$FFF0` is treated as a special value.
+\
+\ This limits the number of blocks available to the system
+\ and hence the ultimate file system size.
+
+$FFF0 constant blk.lastv    \ Start of special block numbers
 $FFFB constant blk.end      \ End of FAT chain
 $FFFC constant blk.unmapped \ Unmapped / Not memory
 $FFFD constant blk.bad-blk  \ Block is bad
 $FFFE constant blk.special  \ Special blocks
 $FFFF constant blk.free     \ Block is free to use
+
 16 constant maxname         \ Maximum directory entry length
  8 constant maxdir          \ Maximum directory depth
 b/buf constant #rem         \ Default Remaining/Used bytes
@@ -564,18 +610,6 @@ variable dirp 0 dirp !           \ Directory Stack Pointer
 variable read-only 0 read-only ! \ Make file system read only 
 $0100 constant version           \ File System version
 
-cell 2 = ?\ $8000 constant #msb
-cell 4 = ?\ $80000000 constant #msb
-cell 8 = ?\ $8000000000000000 constant #msb
-defined #msb 0= [if] abort" #msb not set" [then]
-
-: d2* over #msb and >r 2* swap 2* swap r> if 1 or then ;
-: d2/ dup   1 and >r 2/ swap 2/ r> if #msb or then swap ;
-: dlshift begin ?dup while >r d2* r> 1- repeat ; ( d u -- d )
-: drshift begin ?dup while >r d2/ r> 1- repeat ; ( d u -- d )
-: dand rot and >r and r> ; ( d d -- d )
-: dor rot or >r or r> ; ( d d -- d )
-: dxor rot xor >r xor r> ; ( d d -- d )
 : bbuf/ ( d -- rem quo : div/mod by 1024 )
   over 1023 and >r 10 drshift drop r> swap ;
 : hbuf/ ( d -- rem quo : div/mod by 512 )
@@ -583,6 +617,9 @@ defined #msb 0= [if] abort" #msb not set" [then]
 : fatcnt ( -- : FAT blocks need to store file system )
   0 hbuf/ ( b/buf 2/ um/mod ) swap 0<> negate + 1 max ;
 
+\ This section contains system constants that defines what
+\ sections of the file system go where.
+\
 \ It would be better if these constants were set a run time,
 \ but it is not necessary. It does mean the user of this
 \ program would have to tailor these constants, such as
@@ -719,9 +756,9 @@ defined eforth [if] : numberify number? ; [else]
 : grab ( <word> -- a : get word from input stream  )
   begin bl word dup nul? 0= ?exit drop query again ;
 : integer grab count numberify nip dpl @ 0< and ; 
-: integer? integer 0= -$18 and throw ;
-: modify read-only @ 0= if update then ;
-: save read-only @ 0= if update save-buffers then ;
+: integer? integer 0= -$18 and throw ; ( "int" -- )
+: modify read-only @ ?exit update ;
+: save read-only @ ?exit update save-buffers ;
 : fatal? fatal @ 0<> throw ;
 : block? ( blk -- blk )
   fatal?
@@ -749,7 +786,7 @@ cell 2 = little-endian and [if]
 : f!t ( u blk -- : write to FAT record )
   fat? 0= throw
   decompose 2* swap fat + addr? + 16! modify ;
-: linkable 
+: linkable ( blk -- blk f )
   dup 1 end 1+ within 
   \ N.B. If `block.end` then we are linkable in a way, we
   \ could handle that.
@@ -775,7 +812,7 @@ cell 2 = little-endian and [if]
     +string
   repeat drop rdrop ;
 : btotal end start - ; ( -- n : total blocks allocatable )
-: bcheck btotal 4 < -1 and throw ;
+: bcheck btotal 4 < -1 and throw ; ( -- )
 : bblk addr? b/buf blank save ; ( blk -- : blank a block )
 : fblk addr? b/buf erase save ; ( blk -- : erase a block )
 : free? ( -- blk f : is a block free? )
@@ -880,7 +917,7 @@ cell 2 = little-endian and [if]
   next drop ;
 
 cell 2 = [if] \ limit arithmetic to a 16-bit value
-: limit immediate ;  [else] : limit $FFFF and ; [then]
+: limit immediate ; [else] : limit $FFFF and ; [then]
 
 \ http://stackoverflow.com/questions/10564491
 \ https://www.lammertbies.nl/comm/info/crc-calculation.html
@@ -1157,7 +1194,17 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
 
 \ ## File Access Methods
 \
-\ File Handle Structure:
+\ The File Access Words / Methods (FAM) are standard, but
+\ optional, Forth words that provide a way of interacting with
+\ the file system. They are analogous to the C standard library
+\ words present in the `stdio.h`.
+\
+\ See <https://forth-standard.org/standard/file> for the
+\ Standard ANS Forth File Access words and
+\ <https://cplusplus.com/reference/cstdio> for the C file
+\ API.
+\
+\ Useful to bear in mind is the File Handle Structure:
 \
 \        FLAGS:    16/cell
 \        HEAD-BLK: 16/cell
@@ -1166,7 +1213,6 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
 \        BLK-POS:  16/cell
 \        DIR-LINE: 16/cell
 \        DIR-BLK:  16/cell
-\
 \
 \ Some useful debug words for printing out file system
 \ information:
@@ -1193,7 +1239,6 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
 \          dup f.dblk  @ ." DBK: " u. cr
 \          drop ;
 \
-
 \ ### Include/Require
 \
 \ `entry` and `required?` are used by `included`, `include`,
@@ -1259,7 +1304,7 @@ wordlist constant {required}
   dup reqbuf c!
   reqbuf 1+ swap cmove ;
 : (stdio) flg.stdout flg.stdin or ; ( -- u )
-: stdio flg.wen flg.ren or (stdio) or ;
+: stdio flg.wen flg.ren or (stdio) or ; ( -- u )
 : fam? dup stdio invert and 0<> throw ; ( fam -- fam )
 : ferror findex f.flags @ flg.error and 0<> ; ( handle -- f )
 : fail f.flags flg.error swap set ; ( findex -- )
@@ -1549,7 +1594,8 @@ r/o w/o or constant r/w ( -- fam : read/write )
 \ no real structure to this section, there is a menagerie of
 \ helping words, often one per command that will be implemented
 \ later, for example `(cmp)` is used to implement the command
-\ `cmp`.
+\ `cmp`. Prior sections are also composed of helper words
+\ for the next section.
 \
 
 {ffs} +order definitions
@@ -1728,7 +1774,7 @@ variable flock -1 flock !
 
 wordlist constant {lzp} {lzp} +order definitions
 
-8 constant model-bits
+8 constant model-bits \ log_2(model-size)
 1 model-bits lshift constant model-size
 create model model-size allot align \ Sie ist ein Model...
 create buf 9 allot align \ Control Byte + Up to 8 literals
@@ -1741,7 +1787,7 @@ variable ocnt       \ Bytes in output text
 variable prediction \ Current prediction state / hash value
 variable run        \ Do we have a run of data?
 
-: +hash  ( h c -- h )
+: +hash  ( h c -- h : our predictor model, a simple hash )
   swap 4 lshift xor [ model-size 1- ] literal and ; 
 
 \ Needed for gforth `key-file` that comes with gforth and uses
@@ -1757,7 +1803,7 @@ variable run        \ Do we have a run of data?
   infile @ key-file dup 0< if -1 fin ! exit then 1 icnt +! ;
 : put outfile @ emit-file throw 1 ocnt +! ; ( c -- )
 : predict prediction @ swap +hash prediction ! ; ( c -- )
-: reset
+: reset ( -- : reset LZP model and variables )
   0 prediction !
   0 fin ! 
   0 icnt ! 0 ocnt !
@@ -1771,7 +1817,7 @@ variable run        \ Do we have a run of data?
     buf bufp @ outfile @ write-file throw
     bufp @ ocnt +!
   then breset ;
-: lzp-encode ( -- ior )
+: lzp-encode ( -- ior : LZP compress, set file handles before )
   reset
   begin
     breset
@@ -1792,7 +1838,7 @@ variable run        \ Do we have a run of data?
     repeat drop
     wbuf
   fin @ until 0 ;
-: lzp-decode ( -- ior )
+: lzp-decode ( -- ior : LZP decompress )
   reset
   begin
     get dup 0< if drop 0 exit then
@@ -1842,7 +1888,14 @@ variable run        \ Do we have a run of data?
 \
 \ This section has a series commands that form the interface
 \ between the file system and the user. These are the words
-\ that form the core of this module.
+\ that form the core of this module and what everything has
+\ been building up to.
+\
+\ Although a shell word could be made that parses user input
+\ and passes the arguments to functions to keep things simple
+\ the parsing and execution of commands is done by the built
+\ in mechanisms available to Forth.
+\
 
 {dos} +order definitions
 
@@ -2006,7 +2059,12 @@ variable run        \ Do we have a run of data?
 \ especially a problem when executing files formatted as Forth 
 \ blocks, as `read-line` searches the entire buffer for an End 
 \ Of Line marker.
-: script ( "file" -- )
+\
+\ TODO: BUG: Executing a script containing file commands
+\ fails, such as "mkdir a", "mkdir b", "ls". It introduces
+\ garbage. Only in SUBLEQ eFORTH...
+\
+: script ( "file" -- : execute a line based Forth script )
   narg namebuf r/o open-file throw >r
   begin
     copy-store b/buf r@ read-line line-end? 0=
@@ -2033,7 +2091,7 @@ variable run        \ Do we have a run of data?
     over >r namelen r> swap type ." /"
     1+
   repeat drop ;
-: tree ( -- : tree view of file system, could be improved )
+: tree ( -- : tree view of file system )
   cr pwd ls
   dsl
   begin
@@ -2053,14 +2111,14 @@ variable run        \ Do we have a run of data?
   peekd r@ dir? 0= if rdrop 0 (rm) exit then
   peekd r@ dirent-blk@ (deltree)
   peekd r> 1 (remove) ;
-: help ( -- )
+: help ( -- : print a spartan help message )
   cr
   cr ." Use `more help.txt` in the root directory for help." 
   cr ." Type `cd /` to get to the root directory and `ls`
   cr ." to view files."
   cr cr ." Otherwise visit <https://github.com/howerj/ffs>"
   cr cr ." Command List: " cr words cr cr ;
-: cat ( "file" -- )
+: cat ( "file" -- : barf a file out )
   token count r/o open-file throw cr
   >r
   begin r@ key-file dup 0>= while emit repeat drop
@@ -2347,6 +2405,8 @@ drop
 : stdout <stdout> @ ; ( -- file )
 : stderr <stderr> @ ; ( -- file )
 
+\ ### Primitive Login System
+
 defined eforth [if]
 \ A primitive user login system [that is super insecure].
 \ If no users are present then we login automatically. The
@@ -2407,12 +2467,51 @@ only forth definitions +dos +ffs +system
 \ and directories, including a help file and some system
 \ files.
 \
+\ Special files that are created with `mknod` include:
+\
+\ * \[BOOT\]
+\ * \[FAT\]
+\ * \[KERNEL\]
+\
+\ "\[BOOT\]" contains a single Forth Block that is executed
+\ on boot. It should contain Forth source and not machine code.
+\ It is specially formatted.
+\
+\ "\[FAT\]" contains a linked list of blocks that hold the
+\ FAT partition. This allows direct access to the FAT partition
+\ to query or modify it. Modifying the FAT partition is a
+\ dangerous operation fraught with peril! As it is presented as
+\ a file it is possible to read the partition with the built
+\ in utilities such as `hexdump`. 
+\
+\ "\[KERNEL\]" is present only in SUBLEQ eFORTH, it contains
+\ a linked list of the first 64 blocks, which map on to the
+\ first 64KiB of memory within the SUBLEQ eFORTH interpreter.
+\ Modifying this file can cause system instability much like
+\ modifying "\[FAT\]" can.
+\
+\ These are all special files as their blocks should not be
+\ allocated to files or directories as they hold special data
+\ structures or their contents is outside that of normal file
+\ system partition.
+\
+\ The entries can be removed with no problems.
+\
+\ Other files created are:
+\
+\ * `demo.blk`
+\ * `help.txt`
+\ * `errors.db`
+\ * `words.db` (only on SUBLEQ eFORTH)
+\
 \
 
 mount loaded @ 0= [if]
 cr .( FFS NOT PRESENT, FORMATTING... ) cr
 fdisk
-\ Nested compile time [ if ] s do not work in SUBLEQ eFORTH...
+\ Nested compile time "\[if\]"s do not work in SUBLEQ eFORTH...
+\ TODO: BUG: The big image of SUBLEQ eFORTH places these files
+\ in the wrong place...
 mkdir system
 cd system
 defined eforth 0= ?\ mknod [BOOT] 0
@@ -2421,12 +2520,20 @@ defined eforth    ?\ mknod [BOOT] 65
 defined eforth    ?\ mknod [FAT] 66
 defined eforth    ?\ mknod [KERNEL] 1
 cd ..
+\ This is a simple demo program that does not define new words,
+\ a better, more complex or interesting program could be made,
+\ or perhaps a utility, but it is just used to demonstrate that
+\ the script execution functionality works.
 edit demo.blk
 + .( HELLO, WORLD ) cr
 + 2 2 + . cr
 +
 + .( GOODBYE, CRUEL WORLD! ) cr
 q
+\ A file containing some general help, always useful for the
+\ confused. The file also contains a list of commands (which
+\ could perhaps go in its own file) and instructions for the
+\ block based text editor.
 file: help.txt
 | FORTH FILE SYSTEM HELP AND COMMANDS
 |
@@ -2582,6 +2689,10 @@ file: help.txt
 | file, a new block is assigned if "n" is at the end of the
 | file.
 ;file
+\ `errors.db` contains a list of standard Forth errors, one
+\ per line. It is possible to construct a set of words that
+\ look up the textual description of an error given the number
+\ quite easily.
 file: errors.db
 | -1  ABORT
 | -2  ABORT"
@@ -3008,4 +3119,6 @@ file: words.db
 ;file
 [then]
 
++ffs
++dos
 .( DONE ) cr \ And we are finished and ready to go!
