@@ -19,7 +19,8 @@ help:
 	@echo "* run   : run gforth on '${SRC}'"
 	@echo "* dump  : make 'ffs.fb' and hexdump it"
 	@echo "* forth : run unaltered SUBLEQ eFORTH using '${IMAGE}'"
-	@echo "* disk  : make a disk image using '${SRC}' and '${IMAGE}' for SUBLEQ eFORTH"
+	@echo "* disk  : make an image with '${SRC}' and '${IMAGE}' for SUBLEQ eFORTH and run it"
+	@echo "* ro    : make an image with '${SRC}' and '${IMAGE}' for SUBLEQ eFORTH and run it in read only mode"
 	@echo "* clean : BANG AND THE DIRT IS GONE"
 	@echo
 	@echo "For documentation please see '${SRC}' or 'readme.md'"
@@ -43,11 +44,11 @@ disk: subleq disk.dec
 	./subleq disk.dec _disk.dec
 	mv _disk.dec disk.dec
 
+ro r/o: subleq disk.dec
+	./subleq disk.dec
+
 disk.dec: subleq ${IMAGE} ${SRC}
 	./subleq ${IMAGE} $@ < ${SRC}
-
-lzss: subleq ${IMAGE} ${SRC} lzss.fth
-	cat lzss.fth - | gforth ${SRC}
 
 clean:
 	git clean -dffx
