@@ -39,31 +39,47 @@ case "${FORTH}" in
 		exit 1; ;;
 esac
 
-# TODO: Make disk only once (e.g. save it from being cleaned)
-disk() {
+disk() { # Make a SUBLEQ eForth disk image
 	if [ ! -f disk.dec ]; then make disk; fi;
 }
 
-reset () {
+clean () {
 	make clean;
-	if [ "${FORTH}" = "gforth" ]; then make ffs.fb; else disk; fi;
+}
+
+target () {
+	if [ "${FORTH}" = "gforth" ]; then 
+		# Do nothing, `ffs.fb` will be made as part of `make run` and
+		# is fast to do. Making `disk.dec` is very slow.
+		true;
+	else 
+		disk; 
+	fi;
+}
+
+reset () {
+	clean;
+	target;
 }
 
 run () {
-	reset
+	target;
 	if [ "${FORTH}" = "gforth" ]; then
-		make run;
+		rm -f ffs.fb;
+		make run; # Default makefile run target is gforth
 	else
 		./subleq disk.dec _.dec
 	fi;
 }
 
-
+# TODO: Get working with SUBLEQ eFORTH
 #TFILE=$(tempfile)
 TFILE=$(mktemp)
+echo "TFILE: ${TFILE}";
 trap 'rm -fv -- "${TFILE}"' EXIT
 PROG=$(
 cat <<'EOF'
+
 unexists? 1.txt
 fallocate 1.txt 1
 exists? 1.txt
@@ -90,6 +106,16 @@ require test.fth
 rm test.fth
 unexists? test.fth
 
+file: script.fth
+| mkdir x
+| mkdir y
+| ls
+;file
+require script.fth
+require x
+require y
+rmdir x
+rmdir y
 
 .pass
 EOF
@@ -100,5 +126,4 @@ grep -v '^\[FAIL\]' "${TFILE}" > /dev/null
 grep '^\[PASS\]' "${TFILE}" > /dev/null
 rm "${TFILE}"
 exit
-
 
