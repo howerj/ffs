@@ -17,16 +17,33 @@ set -eu
 
 # Forth Unit Test Framework, this will be run under
 # the Forth system to test.
+#
+# TODO: BUG: Junk placed in file system...specifically a
+# file that looks like this `$00XX$0400` is created.
+#
 UNIT=$(
 cat <<'EOF'
+defined quine [if] ' quine <ok> ! ( eForth only ) [then]
+defined [UNIT] [if] [UNIT] [then]
 marker [UNIT]
 +ffs +dos
+
+defined eforth [if] 
+  : def? defined ; 
+  : requine [ ' quine ] literal <ok> ! ;
+[else] 
+  : def? token find ; 
+  : requine ;
+[then]
+
 : .fail cr source type cr ." [FAIL]" cr bye ;
 : .pass cr ." [PASS]" cr bye ;
-: +> token find 0= if .fail then catch 0= ?exit .fail ;
-: -> token find 0= if .fail then catch 0<> ?exit .fail ;
+: +> def? 0= if .fail then catch 0= ?exit .fail ;
+: -> def? 0= if .fail then catch 0<> ?exit .fail ;
 : exists? token count file-exists? 0<> ?exit .fail ;
 : unexists? token count file-exists? 0= ?exit .fail ;
+.( UNIT TEST FRAMEWORK LOADED ) cr
+
 EOF
 )
 
@@ -68,17 +85,17 @@ run () {
 		rm -f ffs.fb;
 		make run; # Default makefile run target is gforth
 	else
-		./subleq disk.dec _.dec
+		./subleq disk.dec t.dec
 	fi;
 }
 
-# TODO: Get working with SUBLEQ eFORTH
-#TFILE=$(tempfile)
 TFILE=$(mktemp)
 echo "TFILE: ${TFILE}";
 trap 'rm -fv -- "${TFILE}"' EXIT
 PROG=$(
 cat <<'EOF'
+\ df
+ls
 
 unexists? 1.txt
 fallocate 1.txt 1
@@ -106,17 +123,57 @@ require test.fth
 rm test.fth
 unexists? test.fth
 
-file: script.fth
+requine
+ls
+file: 1.fth
+| .( SCRIPT 1: make 'x' ) cr
 | mkdir x
+| ls
+| .( SCRIPT 1: make 'y' ) cr
 | mkdir y
 | ls
 ;file
-require script.fth
-require x
-require y
-rmdir x
-rmdir y
+require 1.fth
+\ rmdir x
+\ rmdir y
+\ rm 1.fth
+ls
 
+requine
+file: 2.fth
+| .( 2: mkdir x ) cr ls
+| mkdir x
+| .( 2: cd x ) cr ls
+| cd x
+| .( 2: touch z ) cr ls
+| touch z
+| .( 2: mkdir y ) cr ls
+| mkdir y
+| .( 2: touch q ) cr ls
+| touch q
+| ls
+| pwd
+;file
+requine
+ls
+require 2.fth
+ls
+df
+bye
+exists? q
+exists? z
+requine
+ls
+rm z
+ls
+rm q
+ls
+cd ..
+rm 2.fth
+
+ls
+
+df
 .pass
 EOF
 )
