@@ -1,7 +1,7 @@
 \ # Simple Forth File System
 \
 \ * Author: Richard James Howe
-\ * License: Public Domain / The Unlicense
+\ * License: 0BSD / Public Domain
 \ * Repo: <https://github.com/howerj/ffs>
 \ * Email: <mailto:howe.r.j.89@gmail.com>
 \
@@ -906,6 +906,7 @@ cell 2 = little-endian and [if]
 : apply ( file xt -- : apply execution token to file )
   >r begin dup r@ swap >r execute r> link dup blk.end = until 
   rdrop drop ;
+( : +zero block? block b/buf erase update ; ( blk -- )
 : +list block? list ; ( blk -- )
 : +load block? load ; ( blk -- )
 : (grep) ( N.B - mcopy must hold search term )
@@ -929,6 +930,7 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
   dup  12 lshift limit xor   ( crc x )
   swap 8  lshift limit xor ; ( crc )
 
+\ TODO: Use `ccitt`?
 : crc ( b u -- u : calculate ccitt-ffff CRC )
   $FFFF >r begin ?dup while
    over c@ r> swap
@@ -1395,6 +1397,9 @@ r/o w/o or constant r/w ( -- fam : read/write )
   ncopy namebuf peekd dir-find dup 0< EFILE error
   peekd swap dirent-blk@ link-load ; 
 : include token count included ; ( "file" -- )
+\ BUG: Using these for executing scripts that manipulate the
+\ file system causes problems, most likely related to reqbuf,
+\ ncopy, or mcopy
 : required ( c-addr u -- : execute file, only once )
   pack reqbuf dup count mcopy required? ?exit reqbuf count
   included ;
@@ -1650,6 +1655,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
     r> open-file exit then 
   r> create-file ;
 
+\ BUG: Does not unlock files on failure / missing second file.
 : with-files ( "file" "file" xt -- )
   >r
   token count r/w open-file throw 
@@ -1900,6 +1906,9 @@ variable run        \ Do we have a run of data?
 
 {dos} +order definitions
 
+\ We could print out more information, internal data 
+\ structures, opened handles and detailed information, 
+\ etcetera.
 : df cr ( -- : list disk usage and file system info )
   loaded @ 0= if ." NO DISK" cr exit then
   ." MOUNTED" cr
@@ -2083,6 +2092,29 @@ variable run        \ Do we have a run of data?
 \ could look for certain variable names, or we could make our
 \ own line parser that does variable expansion).
 \
+\ A good extension that has not been implement yet would be to
+\ search the current directory for a script and execute it if
+\ not a Forth word and is the name of an executable script,
+\ an executable flag would help in this. This would require
+\ interacting with the Forth error handling facilities, which
+\ is non-portable, or we could write our own command handler.
+\
+\
+\ BUG: The following script does not work correctly when run
+\ under SUBLEQ eFORTH, but does under GForth, this is most 
+\ likely due to how "\[if\]" is implemented.
+\
+\        file: demo.fth
+\        | defined demo 0= [if] 
+\        | .( `demo` defined ) cr
+\        | : demo cr ." FORTH SCRIPT DEMO" ; 
+\        | [else]
+\        | .( Already defined `demo` ) cr
+\        | [then]
+\        ;file
+\
+\ This is probably also related to how scripts that use the
+\ file system words can also fail.
 : script ( "file" -- : execute a line based Forth script )
   narg namebuf r/o open-file throw >r
   begin
@@ -2160,6 +2192,7 @@ variable run        \ Do we have a run of data?
     then 
   repeat 2drop
   r> close-file throw ." EOF" cr ;
+\ : shred (file) [ ' +zero ] literal apply flush ;
 : bcat (file) [ ' +list ] literal apply ; ( "file" -- )
 : bmore (file) link-more ; ( "file" -- : display blocks )
 : exe (file) link-load  ; ( "file" -- )
@@ -2523,11 +2556,25 @@ only forth definitions +dos +ffs +system
 \
 \ Other files created are:
 \
-\ * `demo.blk`
-\ * `help.txt`
-\ * `errors.db`
+\ * `demo.blk`: A Forth-Block oriented Forth script
+\ * `demo.fth`: A line oriented Forth script
+\ * `help.txt`: A generic help text.
+\ * `errors.db`: A database of Forth error codes, one per line
 \ * `words.db` (only on SUBLEQ eFORTH)
 \
+\ It would be nice to include the Forth source code for SUBLEQ
+\ eFORTH, available at <https://github.com/howerj/subleq>,
+\ however even cut down versions do not fit within the SUBLEQ
+\ disk image. It would fit within the disk image created in
+\ GForth however, and could be used to generate new SUBLEQ
+\ eFORTH images from within GForth. Even compressing with
+\ `lzp`, the resulting file is too big for the SUBLEQ disk
+\ image.
+\
+\ The source code for the file system could also be stored
+\ within the file system we are to create. This is possible
+\ for the GForth disk image but not the SUBLEQ disk. This would
+\ be the ultimate form of documentation.
 \
 
 mount loaded @ 0= [if]
@@ -2553,6 +2600,18 @@ edit demo.blk
 +
 + .( GOODBYE, CRUEL WORLD! ) cr
 q
+\ This is another demo program, a script that defines a new
+\ word. It is a line oriented file, unlike `demo.blk`, which is
+\ Forth block oriented.
+file: demo.fth
+| defined demo 0= [if] 
+| .( `demo` defined ) cr
+| : demo cr ." FORTH SCRIPT DEMO" ; 
+| [else]
+| .( Already defined `demo` ) cr
+| [then]
+;file
+
 \ A file containing some general help, always useful for the
 \ confused. The file also contains a list of commands (which
 \ could perhaps go in its own file) and instructions for the
@@ -2560,9 +2619,10 @@ q
 file: help.txt
 | FORTH FILE SYSTEM HELP AND COMMANDS
 |
-| Author: Richard James Howe
-| Repo:   https://github.com/howerj/ffs
-| Email:  howe.r.j.89@gmail.com
+| Author:  Richard James Howe
+| Repo:    https://github.com/howerj/ffs
+| Email:   howe.r.j.89@gmail.com
+| License: 0BSD / Public Domain
 |
 | This is a simple DOS like file system for FORTH, it makes
 | it easier to edit and manipulate data than using raw blocks.
@@ -2622,6 +2682,7 @@ file: help.txt
 | rmdir <DIR>: remove an empty directory
 | sh / script <FILE>: execute line based <FILE>
 | sh / shell: invoke file system shell
+\ | shred: overwrite file on disk securely with zeroes
 | stat <FILE>: display detailed information on <FILE>
 | touch / mkfile <FILE>: make a new file
 | tree: recursively print directories from the current one

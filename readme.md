@@ -2,7 +2,7 @@
 
 * Author: Richard James Howe
 * Email: <mailto:howe.r.j.89@gmail.com>
-* License: The Unlicense / Public Domain
+* License: 0BSD / Public Domain
 * Repo: <https://github.com/howerj/ffs>
 
 This is a simple Forth block based file system. See the Forth
@@ -23,6 +23,8 @@ Some quick notes and limitations:
 one block is used, if it is 1200 bytes, 2 blocks will be used).
 * The maximum file system size is roughly 64MiB.
 * The maximum number of files per directory is 31.
+* Command lines are limited to 128 bytes, try to keep them below
+80 chars however.
 * The file system is reliant on the Forth Block word-set and 
 should run on even the most spartan Forth system so long as it 
 is present.
@@ -51,6 +53,11 @@ FAT-12/FAT-16/FAT-32.
 required). A handful of variables and buffers are used, along
 with the Forth Block system (a Block System with a single buffer
 would work).
+* For a list of bugs or to-dos, search for the strings BUG and
+TODO, this is a small project and whilst care has been taken
+in programming it there are bound to be errors, errors which are
+worked out with usage of the system. I would not yet trust it to
+store data without loss, yet.
 
 ## Examples
 
