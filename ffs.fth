@@ -245,7 +245,10 @@
 \ file system limitations and partly due to a lack of need.
 \
 \ TODO: Document each section, capture GIF of usage, make
-\ notes about file path parsing and C program.
+\ notes about file path parsing and C program, To/From Hex
+\ file, execute binary (SUBLEQ only). Special infinite file
+\ of all zeros? Put extra code and utilities in a file that
+\ can be loaded at runtime.
 \
 \ ## Basic Word Definitions
 \
@@ -502,6 +505,8 @@ defined search 0= [if] \ Not defined in SUBLEQ eForth
 \ The constants used have been collected from various places
 \ on the web and are specific to the size of a cell.
 \ 
+\ TODO: Reuse CRC code for PRNG? 
+\ 
 defined random 0= [if]
 cell 2 = ?\ 13 constant #a 9  constant #b 7  constant #c
 cell 4 = ?\ 13 constant #a 17 constant #b 5  constant #c
@@ -604,6 +609,7 @@ namebuf: namebuf \ Used to store names temporarily
 namebuf: findbuf \ Used to store file names for dir-find
 namebuf: compbuf \ Used to store file names for validation
 namebuf: movebuf \ Used to store file names for move/rename
+namebuf: reqnbuf \ Used to store file names for require
 
 32 constant dirsz                \ Length of directory entry
 create dirent-store dirsz allot  \ Directory Stack
@@ -740,14 +746,6 @@ defined eforth [if] : numberify number? ; [else]
   repeat
   drop rdrop 0 ;
 : ferase findex fhandle-size erase ; ( fhandle -- )
-: force-unlock ( -- : force unlocking file system )
-  1 ( ignore handle 0, as it contain stdin/stdout/stderr... )
-  begin
-    dup fopen-max <
-  while
-    dup ferase
-    1+
-  repeat drop ;
 : locked!? locked? ELOCK error ; ( dir -- )
 : equate insensitive @ if icompare exit then compare ;
 : examine insensitive @ if isearch exit then search ;
@@ -1005,6 +1003,10 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
 : mclear movebuf blank ; ( -- )
 : mcopy over movebuf drop = if 2drop exit then
   mclear nlen? movebuf drop swap cmove ; ( c-addr u )
+: rclear reqnbuf blank ; ( -- )
+: rcopy over reqnbuf drop = if 2drop exit then
+  rclear nlen? reqnbuf drop swap cmove ; ( c-addr u )
+\ : $byte base @ >r hex 0 <# # # bl hold #> r> base ! ;
 : .hex base @ >r hex 0 <# # # # # #> type r> base ! ;
 : hexp base @ >r hex 0 <# # # # # [char] $ hold #> r> base ! ;
 : cvalid ( ch -- f : is character valid for a dir name? )
@@ -1401,11 +1403,11 @@ r/o w/o or constant r/w ( -- fam : read/write )
 \ file system causes problems, most likely related to reqbuf,
 \ ncopy, or mcopy
 : required ( c-addr u -- : execute file, only once )
-  pack reqbuf dup count mcopy required? ?exit reqbuf count
+  pack reqbuf dup count rcopy required? ?exit reqbuf count
   included ;
 : require ( "name" -- : execute file, only once )
-  token dup count mcopy
-  required? ?exit movebuf included ;
+  token dup count rcopy
+  required? ?exit reqnbuf included ;
 : rename-file ( c-addr1 u1 c-addr2 u2 -- ior ) 
   ro?
   peekd locked!?
@@ -2029,6 +2031,14 @@ variable run        \ Do we have a run of data?
   narg integer? 
   namebuf peekd dir-find dup >r 0< ENFIL error
   ballocs dup link-blank peekd r> dirent-blk@ fat-append save ;
+: funlock ( -- : force unlocking file system )
+  1 ( ignore handle 0, as it contain stdin/stdout/stderr... )
+  begin
+    dup fopen-max <
+  while
+    dup ferase
+    1+
+  repeat drop ;
 : ftruncate ( "file" n -- : truncate a file to n blocks )
   peekd locked!?
   ro?
@@ -2115,6 +2125,11 @@ variable run        \ Do we have a run of data?
 \
 \ This is probably also related to how scripts that use the
 \ file system words can also fail.
+\
+\ A solution would be to redirect input to read from the
+\ file we just opened and then restore input to stdin after 
+\ finishing reading from it.
+\
 : script ( "file" -- : execute a line based Forth script )
   narg namebuf r/o open-file throw >r
   begin
@@ -2275,6 +2290,22 @@ variable run        \ Do we have a run of data?
     random r@ emit-file drop
     1-
   repeat r> close-file throw ;
+\ ( A hex2bin utility would complete this )
+\ : bin2hex ( "file" "file" -- )
+\   ro? 
+\   narg namebuf r/o open-file throw 
+\   narg namebuf w/o create-file ?dup if 
+\     swap close-file drop throw 
+\   then 
+\   >r >r
+\   begin
+\     r@ key-file dup 0>=
+\   while
+\     $byte r> r> tuck >r >r
+\     write-file ?dup if 
+\       r> close-file r> close-file 2drop throw 
+\     then
+\   repeat drop r> close-file r> close-file throw throw ;
 
 \ ### Easy File Creation
 \
@@ -2662,6 +2693,7 @@ file: help.txt
 | freeze: Freeze file system - Turn on read only mode
 | fsync: save any block changes
 | ftruncate <FILE> <NUM>: truncate <FILE> to <NUM> blocks
+| funlock:  force file unlocking (dangerous)
 | grep <STRING> <FILE>: Search for <STRING> in lines of <FILE>
 | help: display a short help
 | hexdump <FILE>: hexdump a file consisting of blocks

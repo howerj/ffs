@@ -18,12 +18,10 @@ set -eu
 # Forth Unit Test Framework, this will be run under
 # the Forth system to test.
 #
-# TODO: BUG: Junk placed in file system...specifically a
-# file that looks like this `$00XX$0400` is created. This bug
-# is only present when using `require` and not when using `script`.
-#
-# There is another bug related to quine, where the first letter
+# BUG: There is another bug related to quine, where the first letter
 # of a previously used word is printed out as well.
+#
+# We should stress test this system, aiming to handle extreme cases.
 #
 UNIT=$(
 cat <<'EOF'
@@ -122,7 +120,7 @@ ls
 file: test.fth
 | : example ." HELLO" ;
 ;file
-script test.fth
+require test.fth
 +> example
 rm test.fth
 unexists? test.fth
@@ -137,7 +135,7 @@ file: 1.fth
 | mkdir y
 | ls
 ;file
-script 1.fth
+require 1.fth
 rmdir x
 rmdir y
 rm 1.fth
@@ -160,7 +158,7 @@ file: 2.fth
 ;file
 requine
 ls
-script 2.fth
+require 2.fth
 ls
 df
 bye
