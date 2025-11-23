@@ -1,4 +1,4 @@
-CFLAGS=-std=c99 -Wall -Wextra -pedantic -O2 -fwrapv
+CFLAGS=-std=c99 -Wall -Wextra -pedantic -O3 -fwrapv
 SRC=ffs.fth
 IMAGE=subleq.dec
 

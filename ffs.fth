@@ -505,25 +505,23 @@ defined search 0= [if] \ Not defined in SUBLEQ eForth
 \ The constants used have been collected from various places
 \ on the web and are specific to the size of a cell.
 \ 
-\ TODO: Reuse CRC code for PRNG? 
-\ 
-defined random 0= [if]
-cell 2 = ?\ 13 constant #a 9  constant #b 7  constant #c
-cell 4 = ?\ 13 constant #a 17 constant #b 5  constant #c
-cell 8 = ?\ 12 constant #a 25 constant #b 27 constant #c
-defined #a 0= [if] abort" Invalid Cell Size" [then]
-
-variable seed 7 seed ! ( must not be zero )
-
-: seed! ( x -- : set the value of the PRNG seed )
-  dup 0= if drop 7 ( zero not allowed ) then seed ! ;
-
-: random ( -- x : random number )
-  seed @
-  dup #a lshift xor
-  dup #b rshift xor
-  dup #c lshift xor
-  dup seed! ;
+\    defined random 0= [if]
+\    cell 2 = ?\ 13 constant #a 9  constant #b 7  constant #c
+\    cell 4 = ?\ 13 constant #a 17 constant #b 5  constant #c
+\    cell 8 = ?\ 12 constant #a 25 constant #b 27 constant #c
+\    defined #a 0= [if] abort" Invalid Cell Size" [then]
+\    
+\    variable seed 7 seed ! ( must not be zero )
+\    
+\    : seed! ( x -- : set the value of the PRNG seed )
+\      dup 0= if drop 7 ( zero not allowed ) then seed ! ;
+\    
+\    : random ( -- x : random number )
+\      seed @
+\      dup #a lshift xor
+\      dup #b rshift xor
+\      dup #c lshift xor
+\      dup seed! ;
 
 wordlist constant {ffs}
 {ffs} +order definitions
@@ -659,12 +657,12 @@ create linebuf c/blk allot  \ Used as temporary line buffer
 
 \ The following variables are used for the file access routines
 \ which build upon the file system.
-8 constant fopen-max
-7 cells constant fhandle-size
+8 constant fopen-max ( maximum number of opened file handles )
+7 cells constant fhandle-size ( size of a single file handle )
 create fhandles fhandle-size fopen-max * dup cells allot 
        fhandles swap erase
-create reqbuf maxname 1+ allot \ File name as a counted string
-create newline 2 c, $D c, $A c, align
+create pakbuf maxname 1+ allot \ File name as a counted string
+create newline 2 c, $D c, $A c, align ( string of a new line )
 
 \ These are set later, they store the file handles that back
 \ `stdin`, `stdout` and `stderr`, you can redirect them by
@@ -802,14 +800,14 @@ cell 2 = little-endian and [if]
     link
     dup blk.end =
   until drop ;
-: setrange ( val blk u : set block range in FAT to value )
-  rot >r
-  begin
-    ?dup
-  while
-    over r@ swap f!t
-    +string
-  repeat drop rdrop ;
+\ : setrange ( val blk u : set block range in FAT to value )
+\  rot >r
+\  begin
+\    ?dup
+\  while
+\    over r@ swap f!t
+\    +string
+\  repeat drop rdrop ;
 : btotal end start - ; ( -- n : total blocks allocatable )
 : bcheck btotal 4 < -1 and throw ; ( -- )
 : bblk addr? b/buf blank save ; ( blk -- : blank a block )
@@ -928,24 +926,30 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
   dup  12 lshift limit xor   ( crc x )
   swap 8  lshift limit xor ; ( crc )
 
-\ TODO: Use `ccitt`?
 : crc ( b u -- u : calculate ccitt-ffff CRC )
   $FFFF >r begin ?dup while
    over c@ r> swap
-   ( CCITT polynomial $1021, or "x16 + x12 + x5 + 1" )
-   over $8 rshift xor ( crc x )
-   dup  $4 rshift xor ( crc x )
-   dup  $5 lshift xor ( crc x )
-   dup  $C lshift xor ( crc x )
-   swap $8 lshift xor ( crc )
+   ccitt
    >r +string
   repeat r> nip ;
+
+variable seed 7 seed ! ( must not be zero )
+
+: seed! ( x -- : set the value of the PRNG seed )
+  dup 0= if drop 7 ( zero not allowed ) then seed ! ;
+
+\ We can reuse the CRC code for our PRNG, this is not optimal
+\ and produces a PRNG of around half the maximum length. The
+\ reason to reuse the CRC code is to save on space. CRC based
+\ Pseudo-Random-Number-Generators are not that great.
+\
+: random seed @ 0 ccitt dup seed! ; ( -- x )
 
 : link-load [ ' +load ] literal apply ; ( file -- )
 : link-blank [ ' bblk ] literal apply ; ( file -- )
 : more? key [ 32 invert ] literal and [char] Q = ;
-: more> cr ." --- (q)uit? --- " ;
-: moar +list more> more? ;
+: more> cr ." --- (q)uit? --- " ; ( -- : more prompt )
+: moar +list more> more? ; ( -- )
 : link-more ( file -- ) 
   begin 
     dup moar if cr ." QUIT" drop exit then link dup blk.end = 
@@ -982,8 +986,8 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
 : largest ( -- n : largest block that we can allocate )
   blk.free btally 
   begin dup while dup contiguous nip ?exit 1- repeat ;
-: cballoc ( n -- blk f : allocate contiguous slab )
-  dup contiguous if tuck swap reserve-range -1 exit then 0 ;
+\ : cballoc ( n -- blk f : allocate contiguous slab )
+\  dup contiguous if tuck swap reserve-range -1 exit then 0 ;
 : dirp? ( -- )
   dirp @ 0 maxdir within 0= if 0 dirp ! 1 EDDPT error then ;
 : (dir) dirp? dirstk dirp @ cells + ;
@@ -1124,6 +1128,8 @@ cell 2 = [if] \ limit arithmetic to a 16-bit value
   until <> throw ;
 
 \ ## Command Helper Words
+\
+\
 
 : .type ( blk line -- : print directory entry type )
     2dup dir?     if ." DIR   " then
@@ -1304,10 +1310,10 @@ wordlist constant {required}
   dup ferase
   dup findex f.flags flg.used swap set -1 ;
 : pack ( c-addr u )
-  reqbuf maxname 1+ blank
+  pakbuf maxname 1+ blank
   nlen?
-  dup reqbuf c!
-  reqbuf 1+ swap cmove ;
+  dup pakbuf c!
+  pakbuf 1+ swap cmove ;
 : (stdio) flg.stdout flg.stdin or ; ( -- u )
 : stdio flg.wen flg.ren or (stdio) or ; ( -- u )
 : fam? dup stdio invert and 0<> throw ; ( fam -- fam )
@@ -1367,8 +1373,8 @@ r/o w/o or constant r/w ( -- fam : read/write )
 : file-exists? ( c-addr u -- f )
   ncopy namebuf peekd dir-find dsl >= ;
 : file-eof? findex f.flags @ flg.eof and 0<> ; ( fileid -- f )
-: file-error? ( fileid -- f )
-  findex f.flags @ flg.error and 0<> ;
+\ : file-error? ( fileid -- f )
+\   findex f.flags @ flg.error and 0<> ;
 : create-file ( c-addr u fam -- fileid ior )
   ro? fam? >r 2dup ncopy full? 0 [ ' (mkfile) ] literal catch
   ?dup if nip nip nip -1 swap rdrop exit then save
@@ -1395,15 +1401,12 @@ r/o w/o or constant r/w ( -- fam : read/write )
   dup f.flags @ flg.stdin and 0<> EPERM error
   f.head @ link-load ; 
 : included ( c-addr u -- )
-  -trailing pack reqbuf required? drop reqbuf count
+  -trailing pack pakbuf required? drop pakbuf count
   ncopy namebuf peekd dir-find dup 0< EFILE error
   peekd swap dirent-blk@ link-load ; 
 : include token count included ; ( "file" -- )
-\ BUG: Using these for executing scripts that manipulate the
-\ file system causes problems, most likely related to reqbuf,
-\ ncopy, or mcopy
 : required ( c-addr u -- : execute file, only once )
-  pack reqbuf dup count rcopy required? ?exit reqbuf count
+  pack pakbuf dup count rcopy required? ?exit pakbuf count
   included ;
 : require ( "name" -- : execute file, only once )
   token dup count rcopy
@@ -2130,6 +2133,8 @@ variable run        \ Do we have a run of data?
 \ file we just opened and then restore input to stdin after 
 \ finishing reading from it.
 \
+\ This also affect `exe` and anything that uses `link-load`.
+\
 : script ( "file" -- : execute a line based Forth script )
   narg namebuf r/o open-file throw >r
   begin
@@ -2465,10 +2470,10 @@ variable run        \ Do we have a run of data?
 \ ## Helper words and start up routines
 
 forth-wordlist +order definitions
-: +ffs {ffs} +order ;
-: +dos {dos} +order ;
-: +system system +order ;
-: dos ( only ) +dos +ffs mount {ffs} -order ;
+: +ffs {ffs} +order ; ( -- )
+: +dos {dos} +order ; ( -- )
+: +system system +order ; ( -- )
+: dos ( only ) +dos +ffs mount {ffs} -order ; ( -- )
 
 defined eforth 0= [if]
 \ If we are running in eForth we want to add the definitions
@@ -2540,11 +2545,12 @@ users +order definitions create pass , only forth definitions
 \        mkuser cyril figgis
 \        mkuser lana stirling
 \
+\
 \ Next time `login` is called the user will be greeted with
 \ a login prompt.
 only forth definitions +dos +ffs +system
 
-: reboot login quit ;
+: reboot funlock login quit ;
 ' reboot <quit> !
 [then]
 
