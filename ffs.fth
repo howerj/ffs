@@ -146,7 +146,7 @@
 \ separated into file-name and file-extension with an implied
 \ "." like in FAT-12, FAT-16 or FAT-32.
 \
-\ The "BLK" fields are formatted as 16-bit unsigned hexadecimal 
+\ The "BLK" fields are formatted as 16-bit unsigned hexadecimal
 \ numbers with a "$" prefix. They are the initial entries in a
 \ FAT table, which may point to a FAT linked list, a special
 \ block, or a sentinel value in the case that the file is a
@@ -163,7 +163,7 @@
 \
 \ Thirty one directory entries can fit in a single directory, 
 \ which is not shown above as each entry being 32 bytes two 
-\ entries fill and entire line which would push the line length 
+\ entries fill and entire line which would push the line length
 \ over 64 in this document.
 \
 \ ### File Format
@@ -1711,7 +1711,7 @@ r/o w/o or constant r/w ( -- fam : read/write )
 
 \ ## Block Editor
 \
-\ This implements a block editor that operates on discontinuous 
+\ This implements a block editor that operates on discontinuous
 \ blocks. SUBLEQ eForth contains a block editor that operates
 \ on continuous blocks if one is needed, as it allows the
 \ blocks to be directly addressed which is hidden from the
@@ -1770,7 +1770,7 @@ variable flock -1 flock !
 {ffs} +order definitions
 : edlin ( BLOCK editor )
   flock !
-  vista ! head ! 0 line ! ( only ) [ {edlin} ] literal +order ; 
+  vista ! head ! 0 line ! ( only ) [ {edlin} ] literal +order ;
 {edlin} -order
 
 \ ## LZP Compression CODEC
@@ -2948,7 +2948,7 @@ file: words.db
 | -rot ( n1 n2 n3 -- n3 n1 n2 ) reverse of rot
 | -trailing ( a u -- a u ) remove trailing whitespace
 | . ( n -- ) display signed number in current output radix
-| ." ( "string" -- ) compile string into word that prints itself
+| ." ( "str" -- ) compile string into word that prints itself
 | .$ ( -- ) used to implement ."
 | .( ( "display" -- ) parse and emit until matching )
 | .emit ( c -- ) print char, replacing non-graphic ones
@@ -2968,7 +2968,7 @@ file: words.db
 | 2* ( u -- u ) multiply by two, bitshift left by 1
 | 2/ ( u -- u ) divide by two, bitshift right by 1
 | 2>r ( n n --, R: -- n n ) move two values to return stack
-| 2@ ( a -- n n ) retrieve two values from address and next cell
+| 2@ ( a -- n n ) retrieve two values from addr and next cell
 | 2drop ( n n -- ) discard two values
 | 2dup ( n1 n2 -- n1 n2 n1 n2 ) duplicate two stack items
 | 2r> ( -- n n, R: n n -- ) move two values from return stack
@@ -3007,7 +3007,7 @@ file: words.db
 | ?unique ( b -- b ) warn if word definition already exists
 | @ ( a -- n ) retrieve contents of memory address
 | @+ ( a -- a n ) get value at address, keep address
-| @execute ( ??? a -- ??? ) retrieve execution token and execute
+| @execute ( ??? a -- ??? ) retrieve xt token and execute
 | [ ( -- ) immediate, turn command mode on
 | [!] ( u ca -- ) store value at cell address
 | [@] ( ca -- u ) retrieve value from cell address
@@ -3042,7 +3042,7 @@ file: words.db
 | block ( blk -- a ) load data off disk, store modified buffer
 | bput ( k -- ) transfer block buffer to mass storage
 | buf0 ( -- a ) address of block buffer zero
-| buffer ( blk -- a ) like block but it performs no load of data
+| buffer ( blk -- a ) like block but performs no load of data
 | bye ( -- ) halt system
 | c! ( c a -- ) write a single byte to memory location a
 | c, ( c -- ) write byte into dictionary
@@ -3105,7 +3105,7 @@ file: words.db
 | fill ( a u c -- ) fill array with byte n
 | find ( b -- pwd 1 | pwd -1 | a 0 ) find word in dictionary
 | flush ( -- ) discard and un-assign dirty block buffers
-| for ( --, Runtime: n --, R: -- n ) for...aft...then..next loop
+| for ( --, Runtime: n --, R: -- n ) for..aft..then..next loop
 | forth ( -- ) set search order to root-voc and forth-wordlist
 | forth-wordlist ( -- voc ) push the default Forth vocabulary
 | get-current ( -- voc ) equivalent to "current @"
@@ -3118,7 +3118,7 @@ file: words.db
 | hide ( "name" -- ) toggle hidden bit in word definition
 | hld ( -- a ) user variable index into hold space
 | hold ( c -- ) add c to hold space in Pictured Numeric Output
-| if ( --, Runtime: n -- ) immediate, compile-only, if-statement
+| if ( --, Runtime: n -- ) immediate compile-only if-statement
 | immediate ( -- ) make last defined word immediate
 | info ( -- ) print system information
 | ini ( -- ) initialize current task
@@ -3127,7 +3127,7 @@ file: words.db
 | invert ( u -- u ) bitwise invert
 | io! ( -- ) setup input/output routines
 | key ( -- c ) get character from input
-| key? ( -- c 0 | -1 ) get character from input or -1 on failure
+| key? ( -- c 0 | -1 ) get char from input or -1 on failure
 | ktap ( bot eot cur c -- bot eor cur ) handle terminal input
 | last ( -- a ) get last defined word
 | leq0 ( n -- 0 | 1 ) 1 if n is less than or equal to 0, else 0
